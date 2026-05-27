@@ -483,7 +483,9 @@ const SHEET_TABS = {
   ],
   // Commercial Kitchen — main data tab
   '1831xcw0P-qb1BKL1qtVUHwrLyC5TFLGGdlHUDSEIsEA': [
-    { gid: 1472975891, name: 'Main Kitchen final details' },
+    { gid: 1472975891, name: 'CB items' },
+    { gid: 2119318875, name: 'Haks' },
+    { gid: 2091010628, name: 'ID' },
   ],
 };
 
@@ -2606,14 +2608,28 @@ function unwrapKitchenContent(res) {
 async function renderCommercialKitchenInto(host) {
   host.innerHTML = `${liveBar('loading')}<div class="loading">⏳ Pulling Main Kitchen sheet…</div>`;
   try {
-    const md = await fetchSheetRaw(FILES.commercialKitchen);
-    window.__lastRawByFile = window.__lastRawByFile || {};
-    window.__lastRawByFile[FILES.commercialKitchen] = md;
-    if (!md || !md.trim()) {
-      host.innerHTML = `<div class="error" style="margin-bottom:12px"><strong>Empty response from Google Sheets.</strong> Make sure the sheet is shared "Anyone with the link → Viewer".</div>`;
-      return;
+    // Fetch each tab separately so we can assign correct section labels
+    const kitchenTabs = SHEET_TABS[FILES.commercialKitchen] || [];
+    const allSections = [];
+    for (const tab of kitchenTabs) {
+      const csv = await fetchSheetTabRaw(FILES.commercialKitchen, tab.gid).catch(() => '');
+      if (!csv || !csv.trim()) continue;
+      const { sections: tabSections } = parseCommercialKitchen(csv);
+      // Always use the tab name from SHEET_TABS as the authoritative section label
+      tabSections.forEach(s => { s.label = tab.name; });
+      allSections.push(...tabSections);
     }
-    const { sections } = parseCommercialKitchen(md);
+    if (allSections.length === 0) {
+      // Fallback: try single combined fetch
+      const md = await fetchSheetRaw(FILES.commercialKitchen);
+      if (!md || !md.trim()) {
+        host.innerHTML = `<div class="error"><strong>Empty response from Google Sheets.</strong> Make sure the sheet is shared "Anyone with the link → Viewer".</div>`;
+        return;
+      }
+      const { sections: fallbackSections } = parseCommercialKitchen(md);
+      allSections.push(...fallbackSections);
+    }
+    const sections = allSections;
     // Build a normalized list of sections (labels as they appear) and reset
     // the section filter if the previously-active label no longer exists.
     const sectionLabels = sections.map(s => (s.label||'').trim()).filter(Boolean);
@@ -2808,9 +2824,9 @@ async function renderCommercialKitchenInto(host) {
         <span>·</span>
         <span><strong>${subAreaList.length}</strong> sub-areas in scope</span>
       </div>
-      <div style="font-size:11px;color:#64748b;margin-bottom:8px">Filter by Delivery → Commissioning → Section → Area → Sub-area. All filters compose. Currently showing: <strong>${escapeHtml(scopeLabel)}</strong>.</div>
       ${delCards}
       ${comCards}
+      <div style="font-size:11px;color:#64748b;margin:4px 0 8px">Filter by Section → Area → Sub-area below. Currently showing: <strong>${escapeHtml(scopeLabel)}</strong>.</div>
       ${sectionCardsHtml}
       ${areaCards}
       ${subAreaCards}
