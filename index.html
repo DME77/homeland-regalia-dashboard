@@ -77,7 +77,6 @@ tr:nth-child(even) td { background:#fafafa; }
     <button class="tab-btn" data-tab="labour">👷 Labour Report</button>
     <button class="tab-btn" data-tab="purchasable">🛒 Purchasable Items</button>
     <button class="tab-btn" data-tab="elevators">🛗 Elevators</button>
-    <button class="tab-btn" data-tab="billing">💰 Billing</button>
   </div>
 </div>
 <div class="body">
@@ -87,7 +86,7 @@ tr:nth-child(even) td { background:#fafafa; }
   <div id="tab-labour" class="tab-pane" style="display:none"></div>
   <div id="tab-purchasable" class="tab-pane" style="display:none"></div>
   <div id="tab-elevators" class="tab-pane" style="display:none"></div>
-  <div id="tab-billing" class="tab-pane" style="display:none"></div>
+
 </div>
 <div class="footer" id="footer">Use the Reload button at the top of this view to refresh all live data.</div>
 
@@ -107,7 +106,7 @@ const FILES = {
   commercialKitchen: '1NOqYCKjDQRQ_UHeT65vncPPQD5wgMgyu',
   mepLabour:      '1dBfjaVVyud5AXhFK3a771p67134FQkOHIaRFGNeioJg',
   planner:        '1EsUx8Ez8-gjfLT5nf8MiOMqYlBubMRWnTl9dgi-7_R4',
-  acc:            '1PnmXsPlNtO_VTdgvutGyYJOTxQ5DYsIl6ufJuRfiVJM',
+
 };
 const FACADE_FOLDER_ID = '1Aj406SB77Un-nQDZC1HaAVOLTRZp_yoC';
 const PLUMBING_FILES = [
@@ -199,8 +198,7 @@ let activeKitchenCommissioning = 'all'; // Commercial Kitchen: 'all' | 'received
 let activeKitchenSection = 'all';      // Commercial Kitchen: 'all' (every sheet) | a specific section label
 let activeKitchenArea = 'all';         // Commercial Kitchen: Area filter (col B — e.g. "Main Kitchen (Stilt)")
 let activeKitchenSubArea = 'all';      // Commercial Kitchen: Sub-area filter (col C — Beverage/Cold/etc.)
-let activeBillingCard = 'acc';         // Billing tab: which contractor card is selected
-let activeBillingDate = 'master';      // Billing tab: 'master' summary or a specific DD-MM-YYYY date
+
 let activePurchasableSub = 'kitchen';  // Purchasable Items tab: 'kitchen' or 'watcon'
 let activeWatconDept = 'dwg';          // Watcon sub-tab: 'dwg' | 'execution' | 'pumps'
 
@@ -467,154 +465,7 @@ function mepTypeMatchesSub(type, sub) {
   return false;
 }
 
-// ACC DLR (Daily Labour Report) — one Google Sheet with a tab per calendar day
-// plus a cumulative "Main sheet" tab. The Drive export flattens every tab into a
-// single Markdown stream with NO sheet-name delimiters: blocks are separated by
-// blank lines and the date lives inside the header cells as a "Date - DD.MM.YYYY"
-// (or "Date: DD-MM-YYYY") prefix. Three block types repeat per day:
-//   1. ACC Staff Attendance  (roles + counts, last col = TOTAL)
-//   2. DAILY MANPOWER REPORT (11 work rows × M / M-H / SUP/FOR / COOK / SUB TOTAL,
-//                             plus night MAS / HELPER / SUB-TOTAL)
-//   3. Supply Labour         (Mason/Helper/Foreman/Cook/Chowk/Fare × Nos/Rate/Amount,
-//                             day + night halves)
-// We group blocks by date and compute the "master" (cumulative) totals client-side
-// by summing every day — robust even if the export is truncated before the last tabs.
-function accNum(v) {
-  if (v == null) return 0;
-  let s = String(v).replace(/&#10;/g, ' ').replace(/[,₹\s]/g, '').trim();
-  if (!s || s === '-' || s === '–') return 0;
-  const n = parseFloat(s);
-  return isNaN(n) ? 0 : n;
-}
-function accFindDate(cells) {
-  const re = /Date[\s:\-]+(\d{1,2})[.\-](\d{1,2})[.\-](\d{4})/;
-  for (const c of cells) {
-    const m = (c || '').match(re);
-    if (m) return `${m[1].padStart(2,'0')}-${m[2].padStart(2,'0')}-${m[3]}`;
-  }
-  return null;
-}
-function parseACC(md) {
-  // Split into blocks separated by blank / non-pipe lines, dropping separator rows.
-  const blocks = [];
-  let cur = [];
-  for (const raw of md.split('\n')) {
-    const t = raw.trim();
-    if (t.startsWith('|')) {
-      if (/^\|[\s:|\-]+\|$/.test(t)) continue;   // markdown separator row
-      cur.push(t);
-    } else if (cur.length) { blocks.push(cur); cur = []; }
-  }
-  if (cur.length) blocks.push(cur);
 
-  const days = {};          // 'DD-MM-YYYY' -> day record
-  const order = [];         // preserve first-seen date order
-  function ensureDay(d) {
-    if (!days[d]) { days[d] = { date:d, attendanceTotal:null, manpower:[], supply:[],
-      dayMen:0, nightMen:0, dayAmt:0, nightAmt:0 }; order.push(d); }
-    return days[d];
-  }
-  // Manpower blocks carry NO date and may appear before OR after their day's
-  // dated anchor (the export interleaves blocks). We parse a manpower block,
-  // then assign it to the current day if it has none yet, otherwise hold it as
-  // "pending" and attach it to the next new date that lacks manpower.
-  function parseManBlock(block) {
-    const rows = []; let dayMen = 0, nightMen = 0, isMaster = false;
-    for (let i = 1; i < block.length; i++) {
-      if (/Till date/i.test(block[i])) isMaster = true;   // Main-sheet summary marker
-      const c = parseRow(block[i]);
-      const sr = (c[0] || '').trim();
-      const desc = (c[1] || '').replace(/&#10;/g,' ').trim();
-      if (/^TOTAL/i.test(sr)) continue;
-      if (!desc || /WORK DESCRIPTION/i.test(desc)) continue;
-      const r = { desc, m:accNum(c[3]), mh:accNum(c[4]), supfor:accNum(c[5]),
-        cook:accNum(c[6]), daySub:accNum(c[7]), mas:accNum(c[8]),
-        helper:accNum(c[9]), nightSub:accNum(c[10]) };
-      if (!r.daySub) r.daySub = r.m + r.mh + r.supfor + r.cook;
-      if (!r.nightSub) r.nightSub = r.mas + r.helper;
-      rows.push(r); dayMen += r.daySub; nightMen += r.nightSub;
-    }
-    return { rows, dayMen, nightMen, isMaster };
-  }
-  function parseSupBlock(block) {
-    const rows = []; let dayAmt = 0, nightAmt = 0;
-    for (let i = 1; i < block.length; i++) {
-      const c = parseRow(block[i]);
-      const label = (c[0] || '').trim() || (c[1] || '').trim();
-      if (!label || /Description/i.test(label)) continue;
-      const r = { label, dayNos:accNum(c[2]), dayRate:accNum(c[3]), dayAmt:accNum(c[4]),
-        nightNos:accNum(c[5]), nightRate:accNum(c[6]), nightAmt:accNum(c[7]) };
-      rows.push(r); dayAmt += r.dayAmt; nightAmt += r.nightAmt;
-    }
-    return { rows, dayAmt, nightAmt };
-  }
-  function attachMan(d, pm) { d.manpower = pm.rows; d.dayMen += pm.dayMen; d.nightMen += pm.nightMen; }
-
-  let currentDate = null, pendingMan = null;
-  for (const block of blocks) {
-    if (block.length < 2) continue;
-    const header = parseRow(block[0]);
-    const h0 = (header[0] || '');
-    const isAttendance = /Staff Attendance/i.test(h0);
-    const isManpower   = header.some(h => /WORK DESCRIPTION/i.test(h));
-    const isSupply     = header.some(h => /\/Description$/i.test(h)) &&
-                         header.some(h => /\/Amount$/i.test(h));
-    const blockDate = accFindDate(header);
-    if (blockDate && blockDate !== currentDate) {
-      currentDate = blockDate;
-      const d = ensureDay(currentDate);
-      // A manpower block seen before this date anchor belongs here.
-      if (pendingMan && d.manpower.length === 0) { attachMan(d, pendingMan); pendingMan = null; }
-    }
-
-    if (isAttendance) {
-      if (!currentDate) continue;
-      const d = ensureDay(currentDate);
-      const vals = parseRow(block[1] || '');
-      let tot = null;
-      for (let k = vals.length - 1; k >= 0; k--) {
-        if (vals[k] && !isNaN(parseFloat(String(vals[k]).replace(/[,\s]/g,'')))) { tot = accNum(vals[k]); break; }
-      }
-      d.attendanceTotal = tot;
-    } else if (isManpower) {
-      const pm = parseManBlock(block);
-      if (pm.isMaster) continue;   // skip the cumulative "Main sheet" block
-      if (currentDate) {
-        const d = ensureDay(currentDate);
-        if (d.manpower.length === 0) attachMan(d, pm);
-        else pendingMan = pm;       // belongs to an upcoming date
-      } else pendingMan = pm;
-    } else if (isSupply) {
-      if (!currentDate) continue;
-      const d = ensureDay(currentDate);
-      if (d.supply.length === 0) {
-        const ps = parseSupBlock(block);
-        d.supply = ps.rows; d.dayAmt += ps.dayAmt; d.nightAmt += ps.nightAmt;
-      }
-    }
-  }
-
-  // Order dates chronologically.
-  const toTs = (d) => { const [dd,mm,yy] = d.split('-').map(Number); return new Date(yy, mm-1, dd).getTime(); };
-  const dates = order.slice().sort((a,b) => toTs(a) - toTs(b));
-  const dayList = dates.map(d => days[d]);
-
-  // Master / cumulative totals (summed across every loaded day).
-  const master = { totalDayMen:0, totalNightMen:0, totalDayAmt:0, totalNightAmt:0,
-    activeDays:0, peak:{ date:null, men:0 } };
-  for (const d of dayList) {
-    master.totalDayMen   += d.dayMen;
-    master.totalNightMen += d.nightMen;
-    master.totalDayAmt   += d.dayAmt;
-    master.totalNightAmt += d.nightAmt;
-    const men = d.dayMen + d.nightMen;
-    if (men > 0) master.activeDays += 1;
-    if (men > master.peak.men) master.peak = { date:d.date, men };
-  }
-  master.grandAmt = master.totalDayAmt + master.totalNightAmt;
-  master.totalMen = master.totalDayMen + master.totalNightMen;
-  return { days: dayList, master };
-}
 
 // Facade Labour: simple 5-column DPR sheet (FACADE DPR REPORT).
 //   Columns: S NO. | ACTIVITIES | VENDOR | Committed | Total
@@ -1722,7 +1573,7 @@ async function loadCategory(key) {
     else if (key === 'civilFacade')    parsed = parseCivilByTowerBlocks(md, 'Civil Facade', '');
     else if (key === 'landscape')      parsed = parseLandscapeCivil(md, 'Landscape Civil', '');
     else if (key === 'interior')       parsed = parseInteriorExecution(md, 'Interior', '');
-    else if (key === 'acc')            parsed = parseACC(md);
+
   }
   DATA[key] = parsed;
   return parsed;
@@ -3503,217 +3354,10 @@ async function renderElevators() {
     container.innerHTML = `<div class="eyebrow">🛗 Elevators</div><div class="error"><strong>Failed to load:</strong> ${escapeHtml(e?.message || String(e))}</div>`;
   }
 }
-// ─── BILLING TAB (ACC Daily Labour Report) ────────────────
-function accRupees(n) {
-  const v = Math.round(n || 0);
-  return '₹' + v.toLocaleString('en-IN');
-}
-async function renderBilling() {
-  const container = document.getElementById('tab-billing');
-  // Card row — one card per billing contractor (currently just ACC).
-  const cardRow = (active) => `<div class="cards" style="margin-bottom:14px">
-    <button class="card${active==='acc'?' active':''}" data-bcard="acc"
-      style="border-color:${active==='acc'?'#1d4ed8':'#e2e8f0'};background:${active==='acc'?'#eff6ff':'#fff'};box-shadow:${active==='acc'?'0 0 0 3px #93c5fd':'0 1px 4px rgba(0,0,0,0.05)'}">
-      <div class="card-icon">🏗️</div>
-      <div class="card-num" style="color:#1d4ed8;font-size:18px">ACC</div>
-      <div class="card-label">ACC India Pvt Ltd</div>
-      <div class="card-desc">Daily Labour Report</div>
-    </button>
-  </div>`;
-
-  container.innerHTML = `<div class="eyebrow">💰 Billing</div>${cardRow(activeBillingCard)}${liveBar('loading')}<div class="loading">⏳ Pulling ACC sheet from Drive…</div>`;
-  container.querySelectorAll('[data-bcard]').forEach(b =>
-    b.addEventListener('click', () => { activeBillingCard = b.dataset.bcard; activeBillingDate = 'master'; renderBilling(); }));
-
-  try {
-    const acc = await loadCategory('acc');
-    const { days, master } = acc;
-    const meta = await fetchSheetMetadata(FILES.acc);
-    const editStr = meta && meta.modifiedTime ? formatIstTime(meta.modifiedTime) : '—';
-
-    // Date chips: Master first, then each day (most recent first for quick access).
-    const chipDays = days.slice().reverse();
-    const chips = `<div class="subnav" style="flex-wrap:wrap;gap:6px;margin-bottom:14px">
-      <button class="sub-btn${activeBillingDate==='master'?' active':''}" data-bdate="master">📊 Master</button>
-      ${chipDays.map(d => `<button class="sub-btn${activeBillingDate===d.date?' active':''}" data-bdate="${escapeHtml(d.date)}">${escapeHtml(d.date)}</button>`).join('')}
-    </div>`;
-
-    let body = '';
-    if (activeBillingDate === 'master') {
-      body = renderACCMaster(master, days);
-    } else {
-      const d = days.find(x => x.date === activeBillingDate);
-      body = d ? renderACCDay(d) : `<div class="empty">No data for ${escapeHtml(activeBillingDate)}.</div>`;
-    }
-
-    container.innerHTML = `
-      <div class="eyebrow">💰 Billing <span class="tag live">LIVE</span></div>
-      ${cardRow(activeBillingCard)}
-      ${liveBar('live', days.length, 'ACC: Daily Labour Report (' + days.length + ' day tabs)')}
-      <div style="background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:8px 14px;margin-bottom:14px;font-size:11px;color:#64748b">
-        <span style="font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:1px;font-size:10px">⏱ Sheet last edited</span>
-        <span style="margin-left:8px;color:#1e3a5f;font-weight:600">${escapeHtml(editStr)}</span>
-      </div>
-      ${chips}
-      ${body}`;
-
-    container.querySelectorAll('[data-bcard]').forEach(b =>
-      b.addEventListener('click', () => { activeBillingCard = b.dataset.bcard; activeBillingDate = 'master'; renderBilling(); }));
-    container.querySelectorAll('[data-bdate]').forEach(b =>
-      b.addEventListener('click', () => { activeBillingDate = b.dataset.bdate; renderBilling(); }));
-  } catch (e) {
-    container.innerHTML = `<div class="eyebrow">💰 Billing</div>${cardRow(activeBillingCard)}<div class="error"><strong>Failed to load ACC sheet:</strong> ${escapeHtml(e?.message || String(e))}</div>`;
-    container.querySelectorAll('[data-bcard]').forEach(b =>
-      b.addEventListener('click', () => { activeBillingCard = b.dataset.bcard; renderBilling(); }));
-  }
-}
-
-function renderACCMaster(m, days) {
-  const kpi = `<div class="kpis">
-    <div class="kpi" style="background:#eff6ff;border-color:#93c5fd"><div class="kpi-icon">👷</div><div class="kpi-num" style="color:#1d4ed8">${m.totalMen}</div><div class="kpi-label">Total Manpower (man-days)</div></div>
-    <div class="kpi" style="background:#f0fdf4;border-color:#86efac"><div class="kpi-icon">☀️</div><div class="kpi-num" style="color:#16a34a">${m.totalDayMen}</div><div class="kpi-label">Day Shift</div></div>
-    <div class="kpi" style="background:#f5f3ff;border-color:#c4b5fd"><div class="kpi-icon">🌙</div><div class="kpi-num" style="color:#7c3aed">${m.totalNightMen}</div><div class="kpi-label">Night Shift</div></div>
-    <div class="kpi" style="background:#fffbeb;border-color:#fcd34d"><div class="kpi-icon">💰</div><div class="kpi-num" style="color:#b45309;font-size:18px">${accRupees(m.grandAmt)}</div><div class="kpi-label">Supply Labour Cost</div></div>
-  </div>`;
-
-  // Day-vs-night cost split + active days line.
-  const summary = `<div style="background:#fff;border-radius:13px;padding:14px 18px;margin-bottom:16px;border:1px solid #e2e8f0">
-    <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;font-size:12px;color:#475569">
-      <span><b style="color:#1e3a5f">Active days:</b> ${m.activeDays} of ${days.length}</span>
-      <span><b style="color:#1e3a5f">Peak day:</b> ${m.peak.date ? escapeHtml(m.peak.date)+' ('+m.peak.men+' men)' : '—'}</span>
-      <span><b style="color:#16a34a">Day cost:</b> ${accRupees(m.totalDayAmt)}</span>
-      <span><b style="color:#7c3aed">Night cost:</b> ${accRupees(m.totalNightAmt)}</span>
-    </div>
-  </div>`;
-
-  // Daily manpower trend — inline bar chart (no external lib).
-  const maxMen = Math.max(1, ...days.map(d => d.dayMen + d.nightMen));
-  const bars = days.map(d => {
-    const men = d.dayMen + d.nightMen;
-    const h = Math.round(men / maxMen * 90);
-    const dh = Math.round(d.dayMen / maxMen * 90);
-    const nh = Math.round(d.nightMen / maxMen * 90);
-    const dd = d.date.slice(0,2);
-    return `<div title="${escapeHtml(d.date)}: ${men} men (day ${d.dayMen}, night ${d.nightMen})"
-        style="display:flex;flex-direction:column;align-items:center;gap:3px;min-width:22px">
-      <div style="display:flex;flex-direction:column-reverse;height:92px;width:16px;justify-content:flex-start">
-        <div style="height:${dh}px;background:#22c55e;border-radius:0 0 2px 2px"></div>
-        <div style="height:${nh}px;background:#7c3aed;border-radius:2px 2px 0 0"></div>
-      </div>
-      <div style="font-size:9px;color:#94a3b8">${escapeHtml(dd)}</div>
-    </div>`;
-  }).join('');
-  const chart = `<div class="tbl-wrap" style="margin-bottom:16px">
-    <div class="tbl-head" style="background:#f0f7ff;border-bottom:1px solid #bfdbfe">
-      <span>📈</span><span class="tbl-title" style="color:#1e3a5f">Daily Manpower Trend</span>
-      <span style="margin-left:auto;font-size:11px;color:#64748b"><span style="color:#22c55e">■</span> Day &nbsp; <span style="color:#7c3aed">■</span> Night</span>
-    </div>
-    <div style="display:flex;align-items:flex-end;gap:4px;overflow-x:auto;padding:16px 14px 10px">${bars}</div>
-  </div>`;
-
-  // Day-by-day master table.
-  const rows = days.map(d => {
-    const men = d.dayMen + d.nightMen;
-    const amt = d.dayAmt + d.nightAmt;
-    return `<tr>
-      <td class="loc"><a href="#" data-bdate="${escapeHtml(d.date)}" style="color:#1d4ed8;text-decoration:none;font-weight:600">${escapeHtml(d.date)}</a></td>
-      <td style="text-align:center;color:#16a34a;font-weight:700">${d.dayMen}</td>
-      <td style="text-align:center;color:#7c3aed;font-weight:700">${d.nightMen}</td>
-      <td style="text-align:center;font-weight:700">${men}</td>
-      <td style="text-align:center">${d.attendanceTotal!=null?d.attendanceTotal:'—'}</td>
-      <td style="text-align:right;font-weight:700;color:#b45309">${accRupees(amt)}</td>
-    </tr>`;
-  }).join('');
-  const totalsRow = `<tr style="background:#f8fafc;font-weight:800">
-    <td class="loc">TOTAL</td>
-    <td style="text-align:center;color:#16a34a">${m.totalDayMen}</td>
-    <td style="text-align:center;color:#7c3aed">${m.totalNightMen}</td>
-    <td style="text-align:center">${m.totalMen}</td>
-    <td style="text-align:center">—</td>
-    <td style="text-align:right;color:#b45309">${accRupees(m.grandAmt)}</td>
-  </tr>`;
-  const table = `<div class="tbl-wrap">
-    <div class="tbl-head" style="background:#f0f7ff;border-bottom:1px solid #bfdbfe">
-      <span>📅</span><span class="tbl-title" style="color:#1e3a5f">Master — Day-by-day</span>
-      <span class="tbl-count" style="background:#2d5986">${days.length} days</span>
-    </div>
-    <table><thead><tr>
-      <th>Date</th><th style="text-align:center">Day Men</th><th style="text-align:center">Night Men</th>
-      <th style="text-align:center">Total Men</th><th style="text-align:center">Staff</th><th style="text-align:right">Supply Cost</th>
-    </tr></thead><tbody>${rows}${totalsRow}</tbody></table>
-  </div>`;
-
-  return kpi + summary + chart + table;
-}
-
-function renderACCDay(d) {
-  const men = d.dayMen + d.nightMen;
-  const amt = d.dayAmt + d.nightAmt;
-  const kpi = `<div class="kpis">
-    <div class="kpi" style="background:#eff6ff;border-color:#93c5fd"><div class="kpi-icon">👷</div><div class="kpi-num" style="color:#1d4ed8">${men}</div><div class="kpi-label">Total Manpower</div></div>
-    <div class="kpi" style="background:#f0fdf4;border-color:#86efac"><div class="kpi-icon">☀️</div><div class="kpi-num" style="color:#16a34a">${d.dayMen}</div><div class="kpi-label">Day Shift</div></div>
-    <div class="kpi" style="background:#f5f3ff;border-color:#c4b5fd"><div class="kpi-icon">🌙</div><div class="kpi-num" style="color:#7c3aed">${d.nightMen}</div><div class="kpi-label">Night Shift</div></div>
-    <div class="kpi" style="background:#fffbeb;border-color:#fcd34d"><div class="kpi-icon">💰</div><div class="kpi-num" style="color:#b45309;font-size:18px">${accRupees(amt)}</div><div class="kpi-label">Supply Cost</div></div>
-  </div>`;
-
-  // Manpower report table (work descriptions). Hide all-zero rows to keep it tight.
-  const mpRows = d.manpower.filter(r => (r.daySub + r.nightSub) > 0);
-  const mpBody = (mpRows.length ? mpRows : d.manpower).map(r => `<tr>
-    <td class="loc" style="font-size:12px">${escapeHtml(r.desc)}</td>
-    <td style="text-align:center">${r.m||'—'}</td>
-    <td style="text-align:center">${r.mh||'—'}</td>
-    <td style="text-align:center">${r.supfor||'—'}</td>
-    <td style="text-align:center">${r.cook||'—'}</td>
-    <td style="text-align:center;font-weight:700;color:#16a34a">${r.daySub||'—'}</td>
-    <td style="text-align:center;font-weight:700;color:#7c3aed">${r.nightSub||'—'}</td>
-  </tr>`).join('');
-  const mpTable = `<div class="tbl-wrap" style="margin-bottom:16px">
-    <div class="tbl-head" style="background:#f0f7ff;border-bottom:1px solid #bfdbfe">
-      <span>📋</span><span class="tbl-title" style="color:#1e3a5f">Daily Manpower Report — ${escapeHtml(d.date)}</span>
-      <span class="tbl-count" style="background:#2d5986">${mpRows.length} active</span>
-    </div>
-    <table><thead><tr>
-      <th>Work Description</th><th style="text-align:center">M</th><th style="text-align:center">M-H</th>
-      <th style="text-align:center">Sup/For</th><th style="text-align:center">Cook</th>
-      <th style="text-align:center">Day</th><th style="text-align:center">Night</th>
-    </tr></thead><tbody>${mpBody || '<tr><td colspan="7" class="empty">No manpower logged.</td></tr>'}</tbody></table>
-  </div>`;
-
-  // Supply labour table (day + night with amounts).
-  const supBody = d.supply.map(r => `<tr>
-    <td class="loc">${escapeHtml(r.label)}</td>
-    <td style="text-align:center">${r.dayNos||'—'}</td>
-    <td style="text-align:center">${r.dayRate?accRupees(r.dayRate):'—'}</td>
-    <td style="text-align:right;font-weight:600;color:#16a34a">${r.dayAmt?accRupees(r.dayAmt):'—'}</td>
-    <td style="text-align:center">${r.nightNos||'—'}</td>
-    <td style="text-align:center">${r.nightRate?accRupees(r.nightRate):'—'}</td>
-    <td style="text-align:right;font-weight:600;color:#7c3aed">${r.nightAmt?accRupees(r.nightAmt):'—'}</td>
-  </tr>`).join('');
-  const supTotal = `<tr style="background:#f8fafc;font-weight:800">
-    <td class="loc">TOTAL</td><td colspan="2"></td>
-    <td style="text-align:right;color:#16a34a">${accRupees(d.dayAmt)}</td>
-    <td colspan="2"></td>
-    <td style="text-align:right;color:#7c3aed">${accRupees(d.nightAmt)}</td>
-  </tr>`;
-  const supTable = `<div class="tbl-wrap">
-    <div class="tbl-head" style="background:#f0f7ff;border-bottom:1px solid #bfdbfe">
-      <span>💵</span><span class="tbl-title" style="color:#1e3a5f">Supply Labour — ${escapeHtml(d.date)}</span>
-      <span class="tbl-count" style="background:#2d5986">${accRupees(amt)}</span>
-    </div>
-    <table><thead><tr>
-      <th>Description</th>
-      <th style="text-align:center">Day Nos</th><th style="text-align:center">Rate</th><th style="text-align:right">Day Amt</th>
-      <th style="text-align:center">Night Nos</th><th style="text-align:center">Rate</th><th style="text-align:right">Night Amt</th>
-    </tr></thead><tbody>${supBody || '<tr><td colspan="7" class="empty">No supply labour logged.</td></tr>'}${d.supply.length?supTotal:''}</tbody></table>
-  </div>`;
-
-  return kpi + mpTable + supTable;
-}
-
 function showTab(key) {
   activeTab = key;
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === key));
-  ['work','drawings','tendering','labour','purchasable','elevators','billing'].forEach(k => {
+  ['work','drawings','tendering','labour','purchasable','elevators'].forEach(k => {
     const el = document.getElementById('tab-' + k);
     el.style.display = k === key ? '' : 'none';
   });
@@ -3723,7 +3367,6 @@ function showTab(key) {
   else if (key === 'labour')      renderLabour();
   else if (key === 'purchasable') renderPurchasableTab();
   else if (key === 'elevators')   renderElevators();
-  else if (key === 'billing')     renderBilling();
 }
 document.querySelectorAll('.tab-btn').forEach(b => {
   b.addEventListener('click', () => showTab(b.dataset.tab));
