@@ -57,62 +57,98 @@ body { margin:0; font-family:'Segoe UI', system-ui, -apple-system, sans-serif; b
 /* ── Header / Banner ─────────────────────────────────────── */
 .header {
   position: relative;
-  padding: 0 0 0 0;
   color: #fff;
   overflow: hidden;
-  min-height: 170px;
+  min-height: 190px;
 }
 .header-bg {
   position: absolute; inset: 0;
-  background: url('banner.jpg') center 30% / cover no-repeat;
+  background: url('banner.jpg') center 55% / cover no-repeat;
   z-index: 0;
 }
+/* Very light overlay — image is already dark */
 .header-overlay {
   position: absolute; inset: 0;
   background: linear-gradient(
     to bottom,
-    rgba(10,20,45,0.72) 0%,
-    rgba(10,20,45,0.80) 60%,
-    rgba(10,20,45,0.92) 100%
+    rgba(5,5,10,0.35) 0%,
+    rgba(5,5,10,0.50) 55%,
+    rgba(5,5,10,0.82) 100%
   );
   z-index: 1;
 }
 .header-content {
   position: relative; z-index: 2;
-  padding: 26px 24px 0;
+  padding: 22px 24px 0;
 }
+.header-top {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  margin-bottom: 14px;
+}
+/* Real logo image */
+.h-logo {
+  width: 78px;
+  height: 78px;
+  object-fit: contain;
+  flex-shrink: 0;
+  filter: drop-shadow(0 2px 16px rgba(201,168,76,0.45));
+}
+.h-text { flex: 1; }
 .h-brand {
-  font-size: 11px;
+  font-size: 10px;
   letter-spacing: 4px;
   text-transform: uppercase;
-  color: rgba(255,255,255,0.55);
-  margin-bottom: 6px;
-  font-weight: 600;
+  color: rgba(201,168,76,0.70);
+  margin-bottom: 4px;
+  font-weight: 700;
 }
+/* HOMELAND REGALIA in matching gold */
 .h-project {
-  font-size: 30px;
+  font-size: 28px;
   font-weight: 900;
-  letter-spacing: -0.5px;
+  letter-spacing: 2px;
   line-height: 1.1;
-  color: #fff;
-  text-shadow: 0 2px 12px rgba(0,0,0,0.5);
+  color: #c9a84c;
+  text-shadow: 0 1px 10px rgba(0,0,0,0.6);
+  text-transform: uppercase;
 }
-.h-project span {
-  color: #f59e0b;
+/* Decorative divider line like in logo image */
+.h-divider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0 5px;
+}
+.h-divider-line {
+  flex: 1;
+  max-width: 60px;
+  height: 1px;
+  background: linear-gradient(to right, transparent, #c9a84c);
+}
+.h-divider-line.right {
+  background: linear-gradient(to left, transparent, #c9a84c);
+}
+.h-divider-dot {
+  width: 5px; height: 5px;
+  border: 1px solid #c9a84c;
+  transform: rotate(45deg);
+  opacity: 0.8;
 }
 .h-title {
-  font-size: 13px;
-  font-weight: 600;
-  color: rgba(255,255,255,0.80);
-  margin-top: 8px;
-  letter-spacing: 0.3px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 3.5px;
+  text-transform: uppercase;
+  color: rgba(201,168,76,0.80);
 }
 .h-sub {
-  font-size: 11px;
-  color: rgba(255,255,255,0.50);
-  margin-top: 6px;
-  margin-bottom: 20px;
-  letter-spacing: 0.2px;
+  font-size: 10.5px;
+  color: rgba(255,255,255,0.42);
+  margin-top: 8px;
+  letter-spacing: 0.3px;
+  padding-bottom: 18px;
 }
 
 /* ── Header action buttons ──────────────────────────────── */
@@ -121,9 +157,9 @@ body { margin:0; font-family:'Segoe UI', system-ui, -apple-system, sans-serif; b
   display: flex; gap: 8px; align-items: center;
 }
 #reload-btn {
-  background: rgba(255,255,255,0.13);
-  color: #fff;
-  border: 1px solid rgba(255,255,255,0.28);
+  background: rgba(201,168,76,0.18);
+  color: #c9a84c;
+  border: 1px solid rgba(201,168,76,0.45);
   border-radius: 10px;
   padding: 9px 18px;
   font-size: 13px;
@@ -134,11 +170,11 @@ body { margin:0; font-family:'Segoe UI', system-ui, -apple-system, sans-serif; b
   transition: background 0.15s;
   letter-spacing: 0.2px;
 }
-#reload-btn:hover { background: rgba(255,255,255,0.22); }
+#reload-btn:hover { background: rgba(201,168,76,0.30); }
 #theme-toggle {
-  background: rgba(255,255,255,0.13);
+  background: rgba(255,255,255,0.10);
   color: #fff;
-  border: 1px solid rgba(255,255,255,0.28);
+  border: 1px solid rgba(255,255,255,0.22);
   border-radius: 10px;
   padding: 9px 13px;
   font-size: 16px;
@@ -147,12 +183,13 @@ body { margin:0; font-family:'Segoe UI', system-ui, -apple-system, sans-serif; b
   font-family: inherit;
   transition: background 0.15s;
 }
-#theme-toggle:hover { background: rgba(255,255,255,0.22); }
+#theme-toggle:hover { background: rgba(255,255,255,0.20); }
 
 /* ── Tab nav ─────────────────────────────────────────────── */
 .tabnav { display:flex; gap:3px; flex-wrap:wrap; }
-.tab-btn { padding:8px 16px; border-radius:8px 8px 0 0; border:none; font-weight:700; font-size:12px; white-space:nowrap; background:rgba(255,255,255,0.15); color:rgba(255,255,255,0.85); cursor:pointer; transition:all 0.15s; font-family:inherit; }
-.tab-btn.active { background:var(--tab-active-bg); color:var(--tab-active-color); }
+.tab-btn { padding:8px 16px; border-radius:8px 8px 0 0; border:none; font-weight:700; font-size:12px; white-space:nowrap; background:rgba(201,168,76,0.12); color:rgba(255,255,255,0.80); cursor:pointer; transition:all 0.15s; font-family:inherit; }
+.tab-btn:hover { background:rgba(201,168,76,0.22); color:#fff; }
+.tab-btn.active { background:var(--tab-active-bg); color:var(--tab-active-color); border-top: 2px solid #c9a84c; }
 
 /* ── Body & components ──────────────────────────────────── */
 .body { padding:22px 18px 24px; }
@@ -213,17 +250,27 @@ tr:nth-child(even) td { background:var(--tbl-alt); }
     <button id="reload-btn" title="Reload data from Google Sheets" onclick="location.reload()">↻ Reload</button>
   </div>
   <div class="header-content">
-    <div class="h-brand">Homeland Group</div>
-    <div class="h-project">HOMELAND <span>REGALIA</span></div>
-    <div class="h-title">Live Dashboard</div>
-    <div class="h-sub">Live data fetched directly from Google Sheets · Reload to refresh</div>
+    <div class="header-top">
+      <img src="logo.png" class="h-logo" alt="Homeland Regalia Logo">
+      <div class="h-text">
+        <div class="h-brand">Homeland Group</div>
+        <div class="h-project">HOMELAND REGALIA</div>
+        <div class="h-divider">
+          <div class="h-divider-line"></div>
+          <div class="h-divider-dot"></div>
+          <div class="h-divider-line right"></div>
+        </div>
+        <div class="h-title">· Live Construction Dashboard ·</div>
+        <div class="h-sub">Live data fetched directly from Google Sheets · Reload to refresh</div>
+      </div>
+    </div>
     <div class="tabnav" id="tabnav">
-    <button class="tab-btn" data-tab="work">🏗️ Work Execution</button>
-    <button class="tab-btn" data-tab="drawings">📐 Drawing Status</button>
-    <button class="tab-btn active" data-tab="tendering">📋 Tendering</button>
-    <button class="tab-btn" data-tab="labour">👷 Labour Report</button>
-    <button class="tab-btn" data-tab="purchasable">🛒 Purchasable Items</button>
-    <button class="tab-btn" data-tab="elevators">🛗 Elevators</button>
+      <button class="tab-btn" data-tab="work">🏗️ Work Execution</button>
+      <button class="tab-btn" data-tab="drawings">📐 Drawing Status</button>
+      <button class="tab-btn active" data-tab="tendering">📋 Tendering</button>
+      <button class="tab-btn" data-tab="labour">👷 Labour Report</button>
+      <button class="tab-btn" data-tab="purchasable">🛒 Purchasable Items</button>
+      <button class="tab-btn" data-tab="elevators">🛗 Elevators</button>
     </div><!-- /tabnav -->
   </div><!-- /header-content -->
 </div><!-- /header -->
