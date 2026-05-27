@@ -2,22 +2,163 @@
 <html>
 <head>
 <meta charset="utf-8">
-<title>Vivek ed</title>
+<title>Homeland Regalia — Live Dashboard</title>
 <style>
-:root { color-scheme: light; }
+/* ── Theme variables ─────────────────────────────────────── */
+:root {
+  --bg: #f1f5f9;
+  --body-color: #1e3a5f;
+  --card-bg: #fff;
+  --card-border: #e2e8f0;
+  --tbl-alt: #fafafa;
+  --tbl-head-bg: #f9fafb;
+  --th-color: #6b7280;
+  --td-color: #374151;
+  --sub-btn-bg: #fff;
+  --sub-btn-color: #374151;
+  --eyebrow-color: #64748b;
+  --kpi-border: #e2e8f0;
+  --bar-bg: #e5e7eb;
+  --placeholder-bg: #fff;
+  --placeholder-border: #cbd5e1;
+  --placeholder-color: #64748b;
+  --footer-color: #94a3b8;
+  --loading-color: #94a3b8;
+  --tab-active-bg: #f1f5f9;
+  --tab-active-color: #1e3a5f;
+  color-scheme: light;
+}
+html.dark {
+  --bg: #0f172a;
+  --body-color: #e2e8f0;
+  --card-bg: #1e293b;
+  --card-border: #334155;
+  --tbl-alt: #1a2740;
+  --tbl-head-bg: #1e293b;
+  --th-color: #94a3b8;
+  --td-color: #cbd5e1;
+  --sub-btn-bg: #1e293b;
+  --sub-btn-color: #cbd5e1;
+  --eyebrow-color: #94a3b8;
+  --kpi-border: #334155;
+  --bar-bg: #334155;
+  --placeholder-bg: #1e293b;
+  --placeholder-border: #475569;
+  --placeholder-color: #94a3b8;
+  --footer-color: #64748b;
+  --loading-color: #64748b;
+  --tab-active-bg: #0f172a;
+  --tab-active-color: #e2e8f0;
+  color-scheme: dark;
+}
 * { box-sizing: border-box; }
-body { margin:0; font-family:'Segoe UI', system-ui, -apple-system, sans-serif; background:#f1f5f9; color:#1e3a5f; }
-.header { background: linear-gradient(135deg,#1e3a5f 0%,#2d5986 100%); padding:22px 24px 0; color:#fff; }
-.h-eyebrow { font-size:10px; letter-spacing:3px; text-transform:uppercase; opacity:0.65; margin-bottom:3px; }
-.h-title { font-size:20px; font-weight:800; }
-.h-sub { font-size:12px; opacity:0.7; margin-top:4px; margin-bottom:18px; }
+body { margin:0; font-family:'Segoe UI', system-ui, -apple-system, sans-serif; background:var(--bg); color:var(--body-color); transition:background 0.3s,color 0.3s; }
+
+/* ── Header / Banner ─────────────────────────────────────── */
+.header {
+  position: relative;
+  padding: 0 0 0 0;
+  color: #fff;
+  overflow: hidden;
+  min-height: 170px;
+}
+.header-bg {
+  position: absolute; inset: 0;
+  background: url('banner.jpg') center 30% / cover no-repeat;
+  z-index: 0;
+}
+.header-overlay {
+  position: absolute; inset: 0;
+  background: linear-gradient(
+    to bottom,
+    rgba(10,20,45,0.72) 0%,
+    rgba(10,20,45,0.80) 60%,
+    rgba(10,20,45,0.92) 100%
+  );
+  z-index: 1;
+}
+.header-content {
+  position: relative; z-index: 2;
+  padding: 26px 24px 0;
+}
+.h-brand {
+  font-size: 11px;
+  letter-spacing: 4px;
+  text-transform: uppercase;
+  color: rgba(255,255,255,0.55);
+  margin-bottom: 6px;
+  font-weight: 600;
+}
+.h-project {
+  font-size: 30px;
+  font-weight: 900;
+  letter-spacing: -0.5px;
+  line-height: 1.1;
+  color: #fff;
+  text-shadow: 0 2px 12px rgba(0,0,0,0.5);
+}
+.h-project span {
+  color: #f59e0b;
+}
+.h-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(255,255,255,0.80);
+  margin-top: 8px;
+  letter-spacing: 0.3px;
+}
+.h-sub {
+  font-size: 11px;
+  color: rgba(255,255,255,0.50);
+  margin-top: 6px;
+  margin-bottom: 20px;
+  letter-spacing: 0.2px;
+}
+
+/* ── Header action buttons ──────────────────────────────── */
+.header-actions {
+  position: absolute; top: 16px; right: 16px; z-index: 3;
+  display: flex; gap: 8px; align-items: center;
+}
+#reload-btn {
+  background: rgba(255,255,255,0.13);
+  color: #fff;
+  border: 1px solid rgba(255,255,255,0.28);
+  border-radius: 10px;
+  padding: 9px 18px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  line-height: 1;
+  font-family: inherit;
+  transition: background 0.15s;
+  letter-spacing: 0.2px;
+}
+#reload-btn:hover { background: rgba(255,255,255,0.22); }
+#theme-toggle {
+  background: rgba(255,255,255,0.13);
+  color: #fff;
+  border: 1px solid rgba(255,255,255,0.28);
+  border-radius: 10px;
+  padding: 9px 13px;
+  font-size: 16px;
+  cursor: pointer;
+  line-height: 1;
+  font-family: inherit;
+  transition: background 0.15s;
+}
+#theme-toggle:hover { background: rgba(255,255,255,0.22); }
+
+/* ── Tab nav ─────────────────────────────────────────────── */
 .tabnav { display:flex; gap:3px; flex-wrap:wrap; }
 .tab-btn { padding:8px 16px; border-radius:8px 8px 0 0; border:none; font-weight:700; font-size:12px; white-space:nowrap; background:rgba(255,255,255,0.15); color:rgba(255,255,255,0.85); cursor:pointer; transition:all 0.15s; font-family:inherit; }
-.tab-btn.active { background:#f1f5f9; color:#1e3a5f; }
+.tab-btn.active { background:var(--tab-active-bg); color:var(--tab-active-color); }
+
+/* ── Body & components ──────────────────────────────────── */
 .body { padding:22px 18px 24px; }
-.eyebrow { font-size:11px; font-weight:700; color:#64748b; letter-spacing:1.5px; text-transform:uppercase; margin-bottom:12px; }
+.eyebrow { font-size:11px; font-weight:700; color:var(--eyebrow-color); letter-spacing:1.5px; text-transform:uppercase; margin-bottom:12px; }
 .subnav { display:flex; gap:8px; overflow-x:auto; padding-bottom:8px; margin-bottom:18px; }
-.sub-btn { flex:0 0 auto; padding:10px 14px 8px; border-radius:10px; border:2px solid #e2e8f0; background:#fff; color:#374151; cursor:pointer; min-width:96px; text-align:center; transition:all 0.18s; font-family:inherit; }
+.sub-btn { flex:0 0 auto; padding:10px 14px 8px; border-radius:10px; border:2px solid var(--card-border); background:var(--sub-btn-bg); color:var(--sub-btn-color); cursor:pointer; min-width:96px; text-align:center; transition:all 0.18s; font-family:inherit; }
 .sub-btn.active { border-color:#2d5986; background:#1e3a5f; color:#fff; transform:translateY(-2px); box-shadow:0 4px 12px rgba(30,58,95,0.22); }
 .sub-btn .icon { font-size:18px; margin-bottom:3px; }
 .sub-btn .label { font-weight:700; font-size:11px; line-height:1.2; }
@@ -25,60 +166,67 @@ body { margin:0; font-family:'Segoe UI', system-ui, -apple-system, sans-serif; b
 .live-bar { display:flex; align-items:center; gap:8px; margin-bottom:14px; font-size:12px; flex-wrap:wrap; }
 .dot { width:8px; height:8px; border-radius:50%; display:inline-block; }
 .cards { display:flex; gap:10px; margin-bottom:18px; flex-wrap:wrap; }
-.card { flex:1 1 110px; border:2px solid #e2e8f0; border-radius:12px; padding:13px 10px 11px; background:#fff; cursor:pointer; text-align:left; transition:all 0.18s; font-family:inherit; }
+.card { flex:1 1 110px; border:2px solid var(--card-border); border-radius:12px; padding:13px 10px 11px; background:var(--card-bg); cursor:pointer; text-align:left; transition:all 0.18s; font-family:inherit; }
 .card.active { transform:translateY(-2px); }
 .card-icon { font-size:18px; }
 .card-num { font-size:26px; font-weight:800; line-height:1.1; margin-top:4px; }
-.card-label { font-size:12px; font-weight:700; color:#374151; margin-top:2px; }
+.card-label { font-size:12px; font-weight:700; color:var(--td-color); margin-top:2px; }
 .card-desc { font-size:11px; color:#9ca3af; }
-.tbl-wrap { background:#fff; border-radius:14px; overflow:hidden; box-shadow:0 1px 6px rgba(0,0,0,0.07); border:1px solid #e2e8f0; }
+.tbl-wrap { background:var(--card-bg); border-radius:14px; overflow:hidden; box-shadow:0 1px 6px rgba(0,0,0,0.07); border:1px solid var(--card-border); }
 .tbl-head { padding:12px 18px; display:flex; align-items:center; gap:8px; }
 .tbl-title { font-weight:700; font-size:13px; }
 .tbl-count { margin-left:auto; color:#fff; border-radius:20px; padding:2px 12px; font-size:12px; font-weight:700; }
 table { width:100%; border-collapse:collapse; }
-th { padding:10px 12px; font-size:11px; font-weight:700; color:#6b7280; text-align:left; text-transform:uppercase; letter-spacing:0.5px; background:#f9fafb; }
-td { padding:10px 12px; font-size:12px; color:#374151; border-top:1px solid #f1f5f9; vertical-align:top; }
-tr:nth-child(even) td { background:#fafafa; }
+th { padding:10px 12px; font-size:11px; font-weight:700; color:var(--th-color); text-align:left; text-transform:uppercase; letter-spacing:0.5px; background:var(--tbl-head-bg); }
+td { padding:10px 12px; font-size:12px; color:var(--td-color); border-top:1px solid var(--card-border); vertical-align:top; }
+tr:nth-child(even) td { background:var(--tbl-alt); }
 .pill { border-radius:20px; padding:3px 10px; font-size:11px; font-weight:600; display:inline-block; white-space:nowrap; }
 .loc { font-weight:700; color:#1e3a5f; }
 .empty { padding:40px; text-align:center; color:#9ca3af; font-size:13px; }
-.loading { padding:40px; text-align:center; color:#94a3b8; font-size:13px; }
+.loading { padding:40px; text-align:center; color:var(--loading-color); font-size:13px; }
 .error { margin:0; padding:18px; background:#fef2f2; border:1px solid #fca5a5; border-radius:12px; color:#dc2626; font-size:12px; line-height:1.5; }
 .kpis { display:flex; gap:12px; flex-wrap:wrap; margin-bottom:16px; }
-.kpi { flex:1 1 110px; border:2px solid #e2e8f0; border-radius:13px; padding:14px 12px 12px; }
+.kpi { flex:1 1 110px; border:2px solid var(--kpi-border); border-radius:13px; padding:14px 12px 12px; background:var(--card-bg); }
 .kpi-icon { font-size:20px; }
 .kpi-num { font-size:26px; font-weight:800; line-height:1.1; margin-top:3px; }
-.kpi-label { font-size:12px; font-weight:700; color:#374151; margin-top:2px; }
-.bar-outer { flex:1; background:#e5e7eb; border-radius:99px; height:8px; overflow:hidden; }
+.kpi-label { font-size:12px; font-weight:700; color:var(--td-color); margin-top:2px; }
+.bar-outer { flex:1; background:var(--bar-bg); border-radius:99px; height:8px; overflow:hidden; }
 .bar-inner { height:100%; border-radius:99px; }
 .bar-row { display:flex; align-items:center; gap:8px; }
 .bar-pct { font-size:11px; font-weight:700; min-width:34px; text-align:right; }
-.placeholder { background:#fff; border:1px dashed #cbd5e1; border-radius:14px; padding:32px 20px; text-align:center; color:#64748b; }
+.placeholder { background:var(--placeholder-bg); border:1px dashed var(--placeholder-border); border-radius:14px; padding:32px 20px; text-align:center; color:var(--placeholder-color); }
 .placeholder .ph-icon { font-size:32px; margin-bottom:8px; }
-.placeholder .ph-title { font-size:14px; font-weight:700; color:#1e3a5f; margin-bottom:6px; }
-.placeholder .ph-sub { font-size:12px; color:#64748b; line-height:1.5; max-width:520px; margin:0 auto; }
-.footer { text-align:center; font-size:11px; color:#94a3b8; padding:16px 18px 28px; }
+.placeholder .ph-title { font-size:14px; font-weight:700; color:var(--body-color); margin-bottom:6px; }
+.placeholder .ph-sub { font-size:12px; color:var(--placeholder-color); line-height:1.5; max-width:520px; margin:0 auto; }
+.footer { text-align:center; font-size:11px; color:var(--footer-color); padding:16px 18px 28px; }
 .tag { font-size:10px; padding:2px 6px; border-radius:4px; background:#dbeafe; color:#1d4ed8; font-weight:700; vertical-align:middle; margin-left:6px; }
 .tag.live { background:#dcfce7; color:#16a34a; }
 .tag.todo { background:#fef3c7; color:#b45309; }
 </style>
 </head>
 <body>
-<div class="header" style="position:relative">
-  <button id="reload-btn" title="Reload data from Google Sheets" onclick="location.reload()"
-    style="position:absolute;top:14px;right:14px;background:rgba(255,255,255,0.12);color:#fff;border:1px solid rgba(255,255,255,0.25);border-radius:8px;padding:6px 12px;font-size:12px;font-weight:600;cursor:pointer;line-height:1">↻ Reload</button>
-  <div class="h-eyebrow">Homeland Group</div>
-  <div class="h-title">Homeland Regalia — Live Dashboard</div>
-  <div class="h-sub">Live data fetched directly from Google Sheets · Reload to refresh</div>
-  <div class="tabnav" id="tabnav">
+<div class="header">
+  <div class="header-bg"></div>
+  <div class="header-overlay"></div>
+  <div class="header-actions">
+    <button id="theme-toggle" title="Toggle dark / light mode" onclick="toggleTheme()">🌙</button>
+    <button id="reload-btn" title="Reload data from Google Sheets" onclick="location.reload()">↻ Reload</button>
+  </div>
+  <div class="header-content">
+    <div class="h-brand">Homeland Group</div>
+    <div class="h-project">HOMELAND <span>REGALIA</span></div>
+    <div class="h-title">Live Dashboard</div>
+    <div class="h-sub">Live data fetched directly from Google Sheets · Reload to refresh</div>
+    <div class="tabnav" id="tabnav">
     <button class="tab-btn" data-tab="work">🏗️ Work Execution</button>
     <button class="tab-btn" data-tab="drawings">📐 Drawing Status</button>
     <button class="tab-btn active" data-tab="tendering">📋 Tendering</button>
     <button class="tab-btn" data-tab="labour">👷 Labour Report</button>
     <button class="tab-btn" data-tab="purchasable">🛒 Purchasable Items</button>
     <button class="tab-btn" data-tab="elevators">🛗 Elevators</button>
-  </div>
-</div>
+    </div><!-- /tabnav -->
+  </div><!-- /header-content -->
+</div><!-- /header -->
 <div class="body">
   <div id="tab-work" class="tab-pane" style="display:none"></div>
   <div id="tab-drawings" class="tab-pane" style="display:none"></div>
@@ -91,6 +239,23 @@ tr:nth-child(even) td { background:#fafafa; }
 <div class="footer" id="footer">Use the Reload button at the top of this view to refresh all live data.</div>
 
 <script>
+// ─── THEME TOGGLE ──────────────────────────────────────────
+(function() {
+  const saved = localStorage.getItem('theme');
+  if (saved === 'dark') { document.documentElement.classList.add('dark'); }
+})();
+function toggleTheme() {
+  const isDark = document.documentElement.classList.toggle('dark');
+  localStorage.setItem('theme', isDark ? 'dark' : 'light');
+  document.getElementById('theme-toggle').textContent = isDark ? '☀️' : '🌙';
+}
+// Set correct icon on load
+document.addEventListener('DOMContentLoaded', function() {
+  const isDark = document.documentElement.classList.contains('dark');
+  const btn = document.getElementById('theme-toggle');
+  if (btn) btn.textContent = isDark ? '☀️' : '🌙';
+});
+
 // ─── CONFIG ────────────────────────────────────────────────
 const FILES = {
   tendering:      '1kICasSVW4oTuhdHTPU_nTelkcbRuztaCCDScgpy_pG0',
