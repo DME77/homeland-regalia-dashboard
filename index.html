@@ -1630,15 +1630,10 @@ async function renderTendering() {
     if (rows.length === 0) {
       const raw = (window.__lastRawByFile||{})[FILES.tendering] || '(no raw captured)';
       const md  = (window.__lastMdByFile ||{})[FILES.tendering] || '(no md captured)';
-      const tool = getDriveTool();
       container.innerHTML = `
         <div class="eyebrow">📋 Tendering — Diagnostic</div>
         <div class="error" style="margin-bottom:12px">
           <strong>Parser produced 0 rows.</strong> The fetch returned data but the table-row extractor couldn't find any rows in it.
-        </div>
-        <div style="background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:14px;margin-bottom:12px;font-size:12px">
-          <div style="font-weight:700;margin-bottom:6px">Drive tool in use</div>
-          <code style="background:#f1f5f9;padding:2px 6px;border-radius:4px;word-break:break-all">${escapeHtml(tool)}</code>
         </div>
         <div style="background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:14px;margin-bottom:12px">
           <div style="font-weight:700;font-size:12px;margin-bottom:6px">Raw response (first 1500 chars)</div>
@@ -2375,17 +2370,11 @@ function unwrapKitchenContent(res) {
 async function renderCommercialKitchenInto(host) {
   host.innerHTML = `${liveBar('loading')}<div class="loading">⏳ Pulling Main Kitchen sheet…</div>`;
   try {
-    const tool = getDriveTool();
-    const res = await window.cowork.callMcpTool(tool, { fileId: FILES.commercialKitchen });
+    const md = await fetchSheet(FILES.commercialKitchen);
     window.__lastRawByFile = window.__lastRawByFile || {};
-    try { window.__lastRawByFile[FILES.commercialKitchen] = JSON.stringify(res); }
-    catch { window.__lastRawByFile[FILES.commercialKitchen] = String(res); }
-    const md = unwrapKitchenContent(res);
-    if (!md) {
-      const raw = (window.__lastRawByFile[FILES.commercialKitchen] || '').slice(0, 1500);
-      host.innerHTML = `<div class="error" style="margin-bottom:12px"><strong>Empty / unrecognized Drive response.</strong> Couldn't find CSV-shaped content with the expected markers ("S.no.,Areas" or "Main Kitchen (Stilt)").</div>
-        <div style="background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:14px"><div style="font-weight:700;font-size:12px;margin-bottom:6px">Raw response (first 1500 chars)</div>
-        <pre style="white-space:pre-wrap;word-break:break-all;font-size:11px;background:#f8fafc;padding:10px;border-radius:6px;max-height:300px;overflow:auto;margin:0">${escapeHtml(raw)}</pre></div>`;
+    window.__lastRawByFile[FILES.commercialKitchen] = md;
+    if (!md || !md.trim()) {
+      host.innerHTML = `<div class="error" style="margin-bottom:12px"><strong>Empty response from Google Sheets.</strong> Make sure the sheet is shared "Anyone with the link → Viewer".</div>`;
       return;
     }
     const { sections } = parseCommercialKitchen(md);
@@ -3283,10 +3272,8 @@ async function renderElevators() {
   const container = document.getElementById('tab-elevators');
   container.innerHTML = `<div class="eyebrow">🛗 Elevators — ALL LIFTS STATUS</div>${liveBar('loading')}<div class="loading">⏳ Pulling from Drive…</div>`;
   try {
-    const tool = getDriveTool();
-    const res = await window.cowork.callMcpTool(tool, { fileId: FILES.elevators });
-    const md = unwrapElevatorContent(res);
-    if (!md) { container.innerHTML = `<div class="eyebrow">🛗 Elevators</div><div class="error">Empty / unrecognized Drive response.</div>`; return; }
+    const md = await fetchSheet(FILES.elevators);
+    if (!md || !md.trim()) { container.innerHTML = `<div class="eyebrow">🛗 Elevators</div><div class="error">Empty response from Google Sheets. Make sure the sheet is shared "Anyone with the link → Viewer".</div>`; return; }
     const { header, rows } = parseElevators(md);
     if (rows.length === 0) { container.innerHTML = `<div class="eyebrow">🛗 Elevators — 0 rows</div><div class="error">Found CSV but parsed 0 rows.</div>`; return; }
     const CONTRACTOR_COL = 0, LIFT_DETAILS_COL = 1;
