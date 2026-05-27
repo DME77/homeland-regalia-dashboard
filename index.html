@@ -315,6 +315,30 @@ async function fetchSheetTab(fileId, gid) {
   return csvToPipeRows(csv);
 }
 
+// Raw-CSV variants for parsers that need comma-separated input (not pipe-table).
+async function fetchSheetTabRaw(fileId, gid) {
+  const base = `https://docs.google.com/spreadsheets/d/${fileId}/export?format=csv`;
+  const url  = gid != null ? `${base}&gid=${gid}` : base;
+  const r = await fetch(url, { credentials: 'omit' });
+  if (!r.ok) throw new Error(`HTTP ${r.status} fetching ${fileId}${gid != null ? ' tab ' + gid : ''} — make sure the sheet is shared "Anyone with link → Viewer".`);
+  return await r.text();
+}
+const _sheetRawCache = {};
+async function fetchSheetRaw(fileId) {
+  if (_sheetRawCache[fileId]) return _sheetRawCache[fileId];
+  const tabs = SHEET_TABS[fileId];
+  let csv;
+  if (tabs && tabs.length) {
+    const parts = await Promise.all(tabs.map(t => fetchSheetTabRaw(fileId, t.gid).catch(() => '')));
+    csv = parts.filter(Boolean).join('\n');
+  } else {
+    csv = await fetchSheetTabRaw(fileId, null);
+  }
+  if (!csv) throw new Error('Empty response from Google Sheets for ' + fileId);
+  _sheetRawCache[fileId] = csv;
+  return csv;
+}
+
 const _sheetCache = {};
 async function fetchSheet(fileId) {
   if (_sheetCache[fileId]) return _sheetCache[fileId];
@@ -2370,7 +2394,7 @@ function unwrapKitchenContent(res) {
 async function renderCommercialKitchenInto(host) {
   host.innerHTML = `${liveBar('loading')}<div class="loading">⏳ Pulling Main Kitchen sheet…</div>`;
   try {
-    const md = await fetchSheet(FILES.commercialKitchen);
+    const md = await fetchSheetRaw(FILES.commercialKitchen);
     window.__lastRawByFile = window.__lastRawByFile || {};
     window.__lastRawByFile[FILES.commercialKitchen] = md;
     if (!md || !md.trim()) {
@@ -3272,7 +3296,7 @@ async function renderElevators() {
   const container = document.getElementById('tab-elevators');
   container.innerHTML = `<div class="eyebrow">🛗 Elevators — ALL LIFTS STATUS</div>${liveBar('loading')}<div class="loading">⏳ Pulling from Drive…</div>`;
   try {
-    const md = await fetchSheet(FILES.elevators);
+    const md = await fetchSheetRaw(FILES.elevators);
     if (!md || !md.trim()) { container.innerHTML = `<div class="eyebrow">🛗 Elevators</div><div class="error">Empty response from Google Sheets. Make sure the sheet is shared "Anyone with the link → Viewer".</div>`; return; }
     const { header, rows } = parseElevators(md);
     if (rows.length === 0) { container.innerHTML = `<div class="eyebrow">🛗 Elevators — 0 rows</div><div class="error">Found CSV but parsed 0 rows.</div>`; return; }
