@@ -633,26 +633,49 @@ function parseTendering(md) {
 }
 
 // Interior Labour: 9 trades × 10 contractors matrix + TOTAL/REQUIRED rows
+// Sheet structure (direct CSV fetch):
+//   Row 0: "DAILY MANPOWER REPORT" | date | (empty…)   ← merged title/date row
+//   Row 1: S.NO | CONTRACTOR'S NAME | HOI | VD | SH … ← real header with contractor names
+//   Row 2+: 1 | trade name | count | count …           ← data rows
+//   Row N: TOTAL | - | 173 | 8 …
+//   Row N+1: REQUIRED | - | 170 | 15 …
 function parseInteriorLabour(md) {
   const lines = splitTableRows(md);
   if (lines.length < 3) return { contractors: [], trades: [] };
-  const headers = parseRow(lines[0]);
-  // headers come back as "Section/Column" in Drive's representation, e.g.
-  //   "DAILY MANPOWER  REPORT/HOI", "22/05/26/PURUSHOTTAM".
-  // Keep only the contractor name (text after the last slash) so the
-  // "DAILY MANPOWER REPORT" / date section prefix doesn't show up.
+
+  // Find the real header row — the one whose col[0] looks like "S.NO" / "S NO"
+  // or whose col[1] contains "CONTRACTOR". Falls back to row 0.
+  let headerRowIdx = 0;
+  for (let i = 0; i < Math.min(lines.length, 6); i++) {
+    const c = parseRow(lines[i]);
+    const col0 = (c[0] || '').toUpperCase().replace(/[\s.]/g, '');
+    const col1 = (c[1] || '').toUpperCase();
+    if (col0 === 'SNO' || col0 === 'SRNO' || col1.includes('CONTRACTOR')) {
+      headerRowIdx = i;
+      break;
+    }
+  }
+
+  const headers = parseRow(lines[headerRowIdx]);
+  // Contractor names are in cols 2 onwards. Strip any date-like prefixes
+  // (e.g. "22/05/26" → keep as-is if no slash gives a useful name, else
+  // take the last segment after the last slash).
   const stripSection = (h) => {
     const s = (h || '').trim();
+    if (!s) return s;
     const k = s.lastIndexOf('/');
-    return (k >= 0 ? s.slice(k + 1) : s).trim();
+    if (k < 0) return s;
+    const after = s.slice(k + 1).trim();
+    // If the part after the slash is purely numeric (a date fragment), return the whole string
+    return /^\d+$/.test(after) ? s : after;
   };
-  // headers: [SO NO, CONTRACTOR'S NAME, HOI, VD, SH, ...]
   const contractorNames = headers.slice(2).map(stripSection);
+
   const trades = [];
   let totals = null, required = null;
-  for (let i = 1; i < lines.length; i++) {
+  for (let i = headerRowIdx + 1; i < lines.length; i++) {
     const c = parseRow(lines[i]);
-    const first = (c[0]||'').toUpperCase();
+    const first = (c[0] || '').toUpperCase();
     if (first.includes('TOTAL')) {
       totals = c.slice(2).map(v => parseInt(v) || 0);
     } else if (first.includes('REQUIRED')) {
@@ -663,12 +686,14 @@ function parseInteriorLabour(md) {
       trades.push({ name: tradeName, byContractor: perContractor, total: perContractor.reduce((s,n)=>s+n,0) });
     }
   }
-  const contractors = contractorNames.map((name, ci) => ({
-    name: (name||'').trim(),
-    present: totals ? (totals[ci] || 0) : 0,
-    committed: required ? (required[ci] || 0) : 0,
-    trades: trades.reduce((acc, t) => { acc[t.name] = t.byContractor[ci] || 0; return acc; }, {}),
-  }));
+  const contractors = contractorNames
+    .map((name, ci) => ({
+      name: (name || '').trim(),
+      present:   totals   ? (totals[ci]   || 0) : 0,
+      committed: required ? (required[ci] || 0) : 0,
+      trades: trades.reduce((acc, t) => { acc[t.name] = t.byContractor[ci] || 0; return acc; }, {}),
+    }))
+    .filter(c => c.name); // drop blank-name columns (empty trailing cells)
   return { contractors, trades };
 }
 
@@ -3285,6 +3310,11 @@ async function renderLabour() {
     // data source so we can fetch and display last-edited times.
     const sourceFiles = [];
     const fetchErrors = []; // collect per-sheet errors — don't crash the whole render
+
+    // Always re-parse labour sheets (small files, always need fresh contractor names)
+    delete DATA['interiorLabour'];
+    delete DATA['facadeLabour'];
+    delete DATA['mepLabour'];
 
     if (activeLabourSub === 'interior' || activeLabourSub === 'all') {
       try {
