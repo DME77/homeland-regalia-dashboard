@@ -882,6 +882,115 @@ function parseWaterproofV2(md) {
   return items;
 }
 
+// ─── SPANDREL GLAZING ─────────────────────────────────────
+// Custom parser for the Spandrel Glazing sheet (3 tabs: Tower 1, Tower 5, Tower 6).
+// Done = "Glass installation" column is TRUE (T1) or "Sprandle panel and Glass installation" (T5/T6)
+// Remark when DONE    = Side flashing and smoke seal column value
+// Remark when PENDING = HOD / Remarks column (reason for pending)
+// GIDs confirmed: Tower 1 = default tab (first), Tower 5 = 1293627169, Tower 6 = 1657055676
+
+function parseSpandrelTabCsv(csv, towerLabel) {
+  if (!csv || csv.trim().length < 30) return [];
+  // Parse CSV → 2D rows
+  const rows = [];
+  let cur = [], field = '', inQ = false;
+  for (let i = 0; i <= csv.length; i++) {
+    const ch = i < csv.length ? csv[i] : '\n';
+    if (inQ) {
+      if (ch === '"' && csv[i+1] === '"') { field += '"'; i++; }
+      else if (ch === '"') inQ = false;
+      else field += ch;
+    } else {
+      if (ch === ',') { cur.push(field.trim()); field = ''; }
+      else if (ch === '\n' || ch === '\r') {
+        if (ch === '\r' && csv[i+1] === '\n') i++;
+        cur.push(field.trim()); field = '';
+        if (cur.some(f => f)) rows.push(cur);
+        cur = [];
+      }
+      else if (ch === '"') inQ = true;
+      else field += ch;
+    }
+  }
+  if (rows.length < 2) return [];
+
+  // Locate header row (must contain FLOOR or FLAT)
+  let hIdx = -1;
+  for (let i = 0; i < Math.min(rows.length, 6); i++) {
+    const h = rows[i].map(c => (c||'').toUpperCase());
+    if (h.some(c => c.includes('FLOOR') || c.includes('FLAT'))) { hIdx = i; break; }
+  }
+  if (hIdx < 0) return [];
+
+  const H = rows[hIdx].map(c => (c||'').toUpperCase().trim());
+
+  const iFloor      = H.findIndex(h => h.includes('FLOOR'));
+  const iFlat       = H.findIndex((h,i) => (h.includes('FLAT') || h === 'FLAT NO.' || h === 'FLAT NO') && i !== iFloor);
+  // Glass installation: T5/T6 have combined "SPRANDLE...GLASS"; T1 has separate "GLASS INSTALLATION"
+  const iCombined   = H.findIndex(h => h.includes('SPRANDLE') && h.includes('GLASS'));
+  const iGlassOnly  = H.findIndex(h => h.includes('GLASS') && h.includes('INSTALL') && !h.includes('SPRANDLE') && !h.includes('RECEIV'));
+  // Resolve: use combined for T5/T6, glass-install for T1
+  const iGlassDone  = iCombined >= 0 ? iCombined : iGlassOnly;
+  // Side flashing and smoke seal (shown in remark when flat is done)
+  const iSideFlash  = H.findIndex(h => h.includes('SIDE') && (h.includes('FLASH') || h.includes('SMOKE')));
+  // Pending reason (HOD / Remarks)
+  const iRem        = H.findIndex(h => h.includes('REMARK') || h === 'HOD');
+
+  const isDoneVal = v => { const u=(v||'').trim().toUpperCase(); return u==='TRUE'||u==='1'||u==='YES'||u==='DONE'||u==='✓'; };
+  const fmtBool   = v => { const u=(v||'').trim().toUpperCase(); if(!u) return '—'; return isDoneVal(v)?'Done':'Pending'; };
+
+  const items = [];
+  let curFloor = '';
+  for (let i = hIdx + 1; i < rows.length; i++) {
+    const row = rows[i];
+    if (iFloor >= 0 && (row[iFloor]||'').trim()) curFloor = row[iFloor].trim();
+    const flatNo = (iFlat >= 0 ? row[iFlat] || '' : '').trim();
+    if (!flatNo) continue;
+    const label = curFloor ? `F${curFloor} – ${flatNo}` : flatNo;
+
+    if (iGlassDone < 0) continue; // can't determine status without the key column
+    const glassDone = isDoneVal(row[iGlassDone]);
+    const anyVal    = (row[iGlassDone]||'').trim() !== '';
+    const status    = glassDone ? 'done' : anyVal ? 'delay' : 'pending';
+
+    let remark = '';
+    if (glassDone) {
+      // Show side flashing status in remark
+      if (iSideFlash >= 0) {
+        const sfVal = (row[iSideFlash]||'').trim();
+        remark = sfVal ? `Side flash: ${fmtBool(sfVal)}` : '';
+      }
+    } else {
+      // Show reason why pending
+      remark = iRem >= 0 ? (row[iRem]||'').trim() : '';
+    }
+
+    items.push({ contractor:'Spandrel Glazing', tower: towerLabel, label,
+      done: glassDone ? 1 : 0, total: 1, status, remark });
+  }
+  return items;
+}
+
+async function loadSpandrelGlazing(fileId) {
+  const all = [];
+  // Tower 1: default/first tab (no GID param)
+  // Tower 5: GID 1293627169
+  // Tower 6: GID 1657055676
+  const tabs = [
+    { gid: null,       tower: 'T1' },
+    { gid: 1293627169, tower: 'T5' },
+    { gid: 1657055676, tower: 'T6' },
+  ];
+  const results = await Promise.all(tabs.map(async ({ gid, tower }) => {
+    try {
+      const csv = await fetchSheetTabRaw(fileId, gid);
+      return parseSpandrelTabCsv(csv, tower);
+    } catch { return []; }
+  }));
+  results.forEach(r => all.push(...r));
+  return all;
+}
+
 // Generic MEP-sheet parser. Detects each table block, identifies stage-boolean columns,
 // and classifies each row as done/delay/pending. Tags entries with contractor + tower.
 function parseMEPSheet(md, contractorTag, defaultTower) {
@@ -1820,6 +1929,7 @@ async function loadCategory(key) {
     parsed = all.flat();
   } else if (key === 'facade') {
     // fileId-based parser overrides for facade sheets that don't fit the generic boolean-stage parser
+    const SPANDREL_ID = '1PAn4OG0Swr3GmaG5KsceR5rVLPYt8uq5wdYfcEQIUm8';
     const FACADE_OVERRIDES = {
       '1xKCbALNOZb9gOE2turvdtVuyOqD5AXqVsc1UhuNdW1Y': parseKrishnaFacade,
       '1Fis0XdnyzqlvxUOCgK6is1hER5flR2cCfp9Jeqs7Ygw': parseBaffleCeiling,
@@ -1828,14 +1938,16 @@ async function loadCategory(key) {
       '18nX6RNIauxASFyTEtAU7kFo34Z1ZDeDM10npkUXAI1g': parseClubFacadeSummary, // Club Tile (Sr Innovation)
       '1qifGPbBmM95TClORqbjvcCvFM-tQdaZP-hf2ovoU0b0': parseSportsArenaWindow,
     };
-    const all = await Promise.all(FACADE_FILES.map(f =>
-      fetchSheet(f.fileId).then(md => {
+    const all = await Promise.all(FACADE_FILES.map(f => {
+      // Spandrel Glazing: custom multi-tab loader (Tower 1, 5, 6)
+      if (f.fileId === SPANDREL_ID) return loadSpandrelGlazing(SPANDREL_ID).catch(()=>[]);
+      return fetchSheet(f.fileId).then(md => {
         const overrideParser = FACADE_OVERRIDES[f.fileId];
         return overrideParser
           ? overrideParser(md, f.contractor, f.defaultTower)
           : parseMEPSheet(md, f.contractor, f.defaultTower);
-      }).catch(()=>[])
-    ));
+      }).catch(()=>[]);
+    }));
     parsed = all.flat();
   } else {
     const md = await fetchSheet(FILES[key]);
