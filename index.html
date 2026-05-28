@@ -3284,37 +3284,69 @@ async function renderLabour() {
     // sourceFiles: parallel array tracking { label, fileId } for each loaded
     // data source so we can fetch and display last-edited times.
     const sourceFiles = [];
+    const fetchErrors = []; // collect per-sheet errors — don't crash the whole render
+
     if (activeLabourSub === 'interior' || activeLabourSub === 'all') {
-      const i = await loadCategory('interiorLabour');
-      sources.push('Interior: Daily Manpower Report');
-      sourceFiles.push({ label:'Interior', fileId: FILES.interiorLabour });
-      i.contractors.forEach(c => rows.push({ kind:'interior', vendor: c.name, activity: 'Interior — multi-trade', present: c.present, committed: c.committed, remarks: '' }));
+      try {
+        const i = await loadCategory('interiorLabour');
+        sources.push('Interior Labour');
+        sourceFiles.push({ label:'Interior', fileId: FILES.interiorLabour });
+        i.contractors.forEach(c => rows.push({ kind:'interior', vendor: c.name, activity: 'Interior — multi-trade', present: c.present, committed: c.committed, remarks: '' }));
+      } catch(e) {
+        delete DATA['interiorLabour']; // clear cache so next reload retries
+        fetchErrors.push({ label:'Interior Labour', fileId: FILES.interiorLabour, msg: e.message });
+      }
     }
     if (activeLabourSub === 'facade' || activeLabourSub === 'all') {
-      const f = await loadCategory('facadeLabour');
-      sources.push('Facade: Facade Labour Report');
-      sourceFiles.push({ label:'Facade', fileId: FILES.facadeLabour });
-      f.vendors.forEach(v => rows.push({ kind:'facade', vendor: v.vendor, activity: v.activity || '—', present: v.present, committed: v.committed, remarks: v.remarks || '' }));
+      try {
+        const f = await loadCategory('facadeLabour');
+        sources.push('Facade Labour');
+        sourceFiles.push({ label:'Facade', fileId: FILES.facadeLabour });
+        f.vendors.forEach(v => rows.push({ kind:'facade', vendor: v.vendor, activity: v.activity || '—', present: v.present, committed: v.committed, remarks: v.remarks || '' }));
+      } catch(e) {
+        delete DATA['facadeLabour'];
+        fetchErrors.push({ label:'Facade Labour', fileId: FILES.facadeLabour, msg: e.message });
+      }
     }
-    // MEP trades (mechanical / plumbing / electrical / fire) all live in one
-    // sheet (MEP manpower report). Fetch once and filter by Contractor Type.
+    // MEP trades (mechanical / plumbing / electrical / fire) all live in one sheet.
     const MEP_SUBS = ['mechanical', 'plumbing', 'electrical', 'fire'];
     if (MEP_SUBS.includes(activeLabourSub) || activeLabourSub === 'all') {
-      const mep = await loadCategory('mepLabour');
-      sources.push('MEP: MEP Manpower Report');
-      sourceFiles.push({ label:'MEP', fileId: FILES.mepLabour });
-      const filtered = activeLabourSub === 'all'
-        ? mep
-        : mep.filter(r => mepTypeMatchesSub(r.type, activeLabourSub));
-      filtered.forEach(v => rows.push({
-        kind: activeLabourSub === 'all' ? (v.type || '').toLowerCase() : activeLabourSub,
-        vendor: v.vendor,
-        activity: v.type || '—',
-        present: v.present,
-        committed: v.committed,
-        remarks: '',
-      }));
+      try {
+        const mep = await loadCategory('mepLabour');
+        sources.push('MEP Labour');
+        sourceFiles.push({ label:'MEP', fileId: FILES.mepLabour });
+        const filtered = activeLabourSub === 'all'
+          ? mep
+          : mep.filter(r => mepTypeMatchesSub(r.type, activeLabourSub));
+        filtered.forEach(v => rows.push({
+          kind: activeLabourSub === 'all' ? (v.type || '').toLowerCase() : activeLabourSub,
+          vendor: v.vendor,
+          activity: v.type || '—',
+          present: v.present,
+          committed: v.committed,
+          remarks: '',
+        }));
+      } catch(e) {
+        delete DATA['mepLabour'];
+        fetchErrors.push({ label:'MEP Labour', fileId: FILES.mepLabour, msg: e.message });
+      }
     }
+
+    // Show per-sheet errors as a fixable warning (doesn't block the render)
+    const errBanner = fetchErrors.length === 0 ? '' : `
+      <div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:10px;padding:12px 16px;margin-bottom:12px">
+        <div style="font-weight:700;color:#dc2626;font-size:12px;margin-bottom:6px">⚠️ ${fetchErrors.length} sheet(s) could not be loaded — data below is partial</div>
+        ${fetchErrors.map(e => `
+          <div style="display:flex;align-items:center;gap:8px;font-size:11px;padding:3px 0;border-top:1px solid #fee2e2">
+            <span style="color:#dc2626;font-weight:600">🔴 ${escapeHtml(e.label)}</span>
+            <span style="color:#6b7280;flex:1">${escapeHtml(e.msg)}</span>
+            <a href="https://docs.google.com/spreadsheets/d/${e.fileId}" target="_blank"
+               style="color:#1d4ed8;font-weight:600;text-decoration:none;white-space:nowrap">
+              Open &amp; Share ↗
+            </a>
+          </div>`).join('')}
+        <div style="font-size:10px;color:#9ca3af;margin-top:6px">Fix: Open the sheet → Share → General access → <strong>Anyone with the link</strong> → Viewer → Done. Then reload.</div>
+      </div>`;
     // Kick off metadata fetches in parallel — won't block the main render
     // since they're optional UI sugar. We render with placeholders, then
     // patch the DOM when metadata returns.
@@ -3371,6 +3403,7 @@ async function renderLabour() {
       <div class="eyebrow">${sub.icon} ${escapeHtml(sub.label)} Labour <span class="tag live">LIVE</span></div>
       ${subnav}
       ${liveBar('live', rows.length, sources.join(' · '))}
+      ${errBanner}
       ${lastEditPlaceholder}
       ${kpiHtml}
       ${summaryHtml}
