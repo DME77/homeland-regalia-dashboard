@@ -748,28 +748,49 @@ function mepTypeMatchesSub(type, sub) {
 function parseFacadeLabour(md) {
   const lines = splitTableRows(md);
   if (lines.length < 2) return { vendors: [] };
-  const headers = parseRow(lines[0]);
-  function findIdx(predicate) {
-    return headers.findIndex(h => predicate((h||'').toUpperCase().trim()));
+
+  // Find the real header row — the sheet has a title row (e.g. "HLR-77 REGALIA … 28-May")
+  // before the actual column headers, so scan up to the first 5 rows for ACTIVITIES + VENDOR.
+  let headerRowIdx = -1;
+  let iAct = -1, iVen = -1, iCom = -1, iTot = -1, iRem = -1;
+  for (let r = 0; r < Math.min(lines.length, 6); r++) {
+    const h = parseRow(lines[r]).map(c => (c||'').toUpperCase().trim());
+    const act = h.findIndex(x => x === 'ACTIVITIES' || x.endsWith('/ACTIVITIES'));
+    const ven = h.findIndex(x => x === 'VENDOR'     || x.endsWith('/VENDOR'));
+    if (act >= 0 && ven >= 0) {
+      headerRowIdx = r;
+      iAct = act;
+      iVen = ven;
+      iCom = h.findIndex(x => /COMMIT/.test(x));
+      iTot = h.findIndex(x => x === 'TOTAL' || x.endsWith('/TOTAL'));
+      iRem = h.findIndex(x => /REMARK/.test(x));
+      break;
+    }
   }
-  const iAct = findIdx(h => /(^|\/)ACTIVITIES$/.test(h) || h === 'ACTIVITIES');
-  const iVen = findIdx(h => /(^|\/)VENDOR$/.test(h)     || h === 'VENDOR');
-  const iCom = findIdx(h => /COMMITTED$/.test(h));
-  const iTot = findIdx(h => /TOTAL$/.test(h));
-  if (iAct < 0 || iVen < 0) return { vendors: [] };
+  if (headerRowIdx < 0) return { vendors: [] };
+
+  // Also capture the report date from the title row if present (row before header)
+  let reportDate = '';
+  if (headerRowIdx > 0) {
+    const titleRow = parseRow(lines[headerRowIdx - 1]);
+    const dateCell = titleRow.find(c => /\d{1,2}[-\/]\w+/.test(c||''));
+    if (dateCell) reportDate = dateCell.trim();
+  }
+
   const vendors = [];
-  for (let i = 1; i < lines.length; i++) {
+  for (let i = headerRowIdx + 1; i < lines.length; i++) {
     const c = parseRow(lines[i]);
     const vendor = (c[iVen] || '').trim();
     if (!vendor) continue;
-    const activity = (c[iAct] || '').trim();
-    const present   = parseInt((c[iTot] || '').trim()) || 0;
-    const committed = parseInt((c[iCom] || '').trim()) || 0;
-    vendors.push({
-      vendor, activity, person:'', present, committed, remarks:'',
-    });
+    // Skip summary/total rows (vendor cell looks like a number-only string or "TOTAL")
+    if (/^total$/i.test(vendor) || /^\d+$/.test(vendor)) continue;
+    const activity  = (c[iAct] || '').trim();
+    const present   = parseInt((iTot >= 0 ? c[iTot] : '') || '0') || 0;
+    const committed = parseInt((iCom >= 0 ? c[iCom] : '') || '0') || 0;
+    const remarks   = iRem >= 0 ? (c[iRem] || '').trim() : '';
+    vendors.push({ vendor, activity, person:'', present, committed, remarks, reportDate });
   }
-  return { vendors };
+  return { vendors, reportDate };
 }
 
 // Waterproofing: 6 tower blocks. For each row (flat × area), classify status from booleans.
