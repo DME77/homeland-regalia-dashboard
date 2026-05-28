@@ -249,6 +249,8 @@ tr:nth-child(even) td { background:var(--tbl-alt); }
   <div class="header-overlay"></div>
   <div class="header-actions">
     <button id="theme-toggle" title="Toggle dark / light mode" onclick="toggleTheme()">🌙</button>
+    <button id="health-btn" title="Check which sheets are accessible" onclick="runHealthCheck()"
+      style="background:rgba(201,168,76,0.18);color:#c9a84c;border:1px solid rgba(201,168,76,0.45);border-radius:10px;padding:9px 14px;font-size:13px;font-weight:700;cursor:pointer;line-height:1;font-family:inherit">🔍 Sheet Check</button>
     <button id="reload-btn" title="Reload data from Google Sheets" onclick="localStorage.setItem('activeTab', activeTab); location.reload()">↻ Reload</button>
   </div>
   <div class="header-content">
@@ -276,6 +278,7 @@ tr:nth-child(even) td { background:var(--tbl-alt); }
     </div><!-- /tabnav -->
   </div><!-- /header-content -->
 </div><!-- /header -->
+<div id="health-panel" style="display:none;margin:14px 18px 0;background:var(--card-bg);border:1px solid var(--card-border);border-radius:14px;padding:16px 18px;max-height:420px;overflow-y:auto"></div>
 <div class="body">
   <div id="tab-work" class="tab-pane" style="display:none"></div>
   <div id="tab-drawings" class="tab-pane" style="display:none"></div>
@@ -3620,6 +3623,67 @@ function showTab(key) {
 document.querySelectorAll('.tab-btn').forEach(b => {
   b.addEventListener('click', () => showTab(b.dataset.tab));
 });
+
+// ─── SHEET HEALTH CHECK ───────────────────────────────────
+async function runHealthCheck() {
+  const allSheets = [
+    { label:'Tendering',         fileId: FILES.tendering },
+    { label:'Interior Labour',   fileId: FILES.interiorLabour },
+    { label:'Facade Labour',     fileId: FILES.facadeLabour },
+    { label:'MEP Labour',        fileId: FILES.mepLabour },
+    { label:'Waterproofing',     fileId: FILES.waterproof },
+    { label:'Drawings',          fileId: FILES.drawings },
+    { label:'Civil',             fileId: FILES.civil },
+    { label:'Civil Facade',      fileId: FILES.civilFacade },
+    { label:'Landscape',         fileId: FILES.landscape },
+    { label:'Interior Execution',fileId: FILES.interior },
+    { label:'Elevators',         fileId: FILES.elevators },
+    { label:'Commercial Kitchen',fileId: FILES.commercialKitchen },
+    { label:'Planner (Common/Watcon)', fileId: FILES.planner },
+    ...PLUMBING_FILES.map(f => ({ label:`Plumbing – ${f.contractor}`, fileId: f.fileId })),
+    ...MECHANICAL_FILES.map(f => ({ label:`Mechanical – ${f.contractor}`, fileId: f.fileId })),
+    ...ELECTRICAL_FILES.map(f => ({ label:`Electrical – ${f.contractor}`, fileId: f.fileId })),
+    ...FIRE_FILES.map(f => ({ label:`Fire – ${f.contractor}`, fileId: f.fileId })),
+    ...FACADE_FILES.map(f => ({ label:`Facade – ${f.contractor}`, fileId: f.fileId })),
+  ];
+  const panel = document.getElementById('health-panel');
+  panel.style.display = 'block';
+  panel.innerHTML = `<div style="font-weight:700;font-size:13px;color:#1e3a5f;margin-bottom:10px">🔍 Checking ${allSheets.length} sheets…</div>
+    <div style="font-size:11px;color:#64748b;margin-bottom:8px">Testing each sheet's public CSV endpoint. <strong>🔴 Blocked</strong> = not shared publicly. Open that sheet → Share → Anyone with link → Viewer.</div>
+    <div id="health-rows"></div>`;
+  const rowsEl = document.getElementById('health-rows');
+  let ok = 0, fail = 0;
+  for (const s of allSheets) {
+    const url = `https://docs.google.com/spreadsheets/d/${s.fileId}/export?format=csv`;
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid #f1f5f9;font-size:11px';
+    row.innerHTML = `<span style="min-width:16px">⏳</span><span style="flex:1;color:#374151">${escapeHtml(s.label)}</span><span style="color:#94a3b8;font-family:monospace;font-size:10px">checking…</span>`;
+    rowsEl.appendChild(row);
+    try {
+      const r = await fetch(url, { credentials: 'omit' });
+      const text = await r.text();
+      const lines = text.split('\n').filter(l => l.trim()).length;
+      if (r.ok && lines > 0) {
+        ok++;
+        row.innerHTML = `<span style="min-width:16px">🟢</span><span style="flex:1;color:#374151">${escapeHtml(s.label)}</span>
+          <span style="color:#16a34a;font-weight:600">${lines} rows</span>
+          <a href="https://docs.google.com/spreadsheets/d/${s.fileId}" target="_blank" style="color:#6b7280;font-size:10px;text-decoration:none">open ↗</a>`;
+      } else {
+        fail++;
+        row.innerHTML = `<span style="min-width:16px">🔴</span><span style="flex:1;color:#dc2626;font-weight:600">${escapeHtml(s.label)}</span>
+          <span style="color:#dc2626">HTTP ${r.status} — not shared publicly</span>
+          <a href="https://docs.google.com/spreadsheets/d/${s.fileId}" target="_blank" style="color:#1d4ed8;font-size:10px;text-decoration:none">fix ↗</a>`;
+      }
+    } catch(e) {
+      fail++;
+      row.innerHTML = `<span style="min-width:16px">🔴</span><span style="flex:1;color:#dc2626;font-weight:600">${escapeHtml(s.label)}</span>
+        <span style="color:#dc2626">Network error</span>`;
+    }
+    // Update summary line
+    const done = ok + fail;
+    panel.querySelector('div').textContent = `🔍 ${done}/${allSheets.length} checked — 🟢 ${ok} OK · 🔴 ${fail} blocked`;
+  }
+}
 
 // ─── INITIAL — restore last active tab ────────────────────
 const VALID_TABS = ['work','drawings','tendering','labour','purchasable','elevators'];
