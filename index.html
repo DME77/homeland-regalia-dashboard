@@ -402,6 +402,7 @@ let activeLabourSub = 'all';
 let activeTenderStatus = 'inprogress';
 let activeWorkItem = 'all';     // Within a live work sub-tab: which Item/Contractor is selected
 let activeWorkLocation = 'all'; // Within a live work sub-tab: which Tower/Location is selected
+let activeWorkSide     = 'all'; // GRC area/side filter within Facade
 let activeDrawingsStatus = 'pending'; // Drawings tab default status filter
 let activeDrawingsLocation = 'all';   // Drawings tab Location filter
 let activeHoiSection = 'flats';       // HOI category: 'flats' or 'items'
@@ -1036,7 +1037,7 @@ async function loadSpandrelGlazing(fileId) {
 
 function parseGRCTabCsv(csv, towerLabel) {
   if (!csv || csv.trim().length < 30) return [];
-  // ── CSV → 2D rows (same inline parser used by Spandrel) ──
+  // ── CSV → 2D rows ──────────────────────────────────────────
   const rows = [];
   let cur = [], field = '', inQ = false;
   for (let i = 0; i <= csv.length; i++) {
@@ -1058,29 +1059,58 @@ function parseGRCTabCsv(csv, towerLabel) {
   }
   if (rows.length < 2) return [];
 
-  // ── Locate header row: must contain FLOOR and GRC ───────
+  // ── Locate header row: must contain FLOOR and GRC ──────────
   let hIdx = -1;
-  for (let i = 0; i < Math.min(rows.length, 5); i++) {
+  for (let i = 0; i < Math.min(rows.length, 8); i++) {
     const h = rows[i].map(c => (c||'').toUpperCase());
     if (h.some(c => /FLOOR/.test(c)) && h.some(c => c.includes('GRC'))) { hIdx = i; break; }
   }
   if (hIdx < 0) return [];
   const H = rows[hIdx].map(c => (c||'').toUpperCase().trim());
 
-  // ── Column indices ────────────────────────────────────────
+  // ── Column indices ──────────────────────────────────────────
   const iContractor = H.findIndex(h => h.includes('CONTRACT'));
-  const iMesh   = H.findIndex(h => h.includes('GRC') && h.includes('MESH'));
-  const iFinal  = H.findIndex(h => h.includes('GRC') && (h.includes('FINAL') || h.includes('CHECK')));
-  const iPlaster= H.findIndex(h => h.includes('GRC') && h.includes('PLASTER'));
-  // All remaining GRC columns = GRC Installation (standalone "GRC" or "GRC INSTALLATION" sub-headings)
-  const grcInstIdxs = H.reduce((acc, h, k) => {
+  const iMesh    = H.findIndex(h => h.includes('GRC') && h.includes('MESH'));
+  const iFinal   = H.findIndex(h => h.includes('GRC') && (h.includes('FINAL') || h.includes('CHECK')));
+  const iPlaster = H.findIndex(h => h.includes('GRC') && h.includes('PLASTER'));
+
+  // Sub-header row above the main header (used by T6 which has standalone "GRC" column names)
+  const subHeaderRow = hIdx > 0 ? rows[hIdx - 1].map(c => (c||'').trim()) : [];
+
+  // Helper: derive a human-readable side/area name from header text + optional sub-header fallback
+  function extractSide(headerText, colIdx, fallbackIdx) {
+    let s = headerText
+      .replace(/GRC\s*INSTALLATION/g, '')
+      .replace(/^GRC\s*/g, '')
+      .replace(/[\-\/]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    // Title-case (preserves parentheses, keeps digits as-is)
+    s = s.replace(/\w+/g, w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase());
+    if (!s && subHeaderRow[colIdx]) {
+      // T6 pattern: area name lives in the row above the header row
+      s = subHeaderRow[colIdx]
+        .replace(/[\-\/]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .replace(/\w+/g, w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase());
+    }
+    if (!s) s = `Area ${fallbackIdx + 1}`;
+    return s;
+  }
+
+  // ── Build grcCols: one entry per GRC Installation column ───
+  let fallbackN = 0;
+  const grcCols = H.reduce((acc, h, k) => {
     if (!h.includes('GRC')) return acc;
     if (k === iMesh || k === iFinal || k === iPlaster) return acc;
-    acc.push(k);
+    acc.push({ idx: k, side: extractSide(h, k, fallbackN++) });
     return acc;
   }, []);
 
-  // ── Group rows by floor ───────────────────────────────────
+  if (grcCols.length === 0) return [];
+
+  // ── Group rows by floor ─────────────────────────────────────
   const floorGroups = [];
   let cur2 = null;
   for (let i = hIdx + 1; i < rows.length; i++) {
@@ -1089,54 +1119,34 @@ function parseGRCTabCsv(csv, towerLabel) {
     if (/\d+\s*floor/i.test(c0)) {
       if (cur2) floorGroups.push(cur2);
       cur2 = { label: c0, contractor: (iContractor >= 0 ? (row[iContractor]||'').trim() : ''), rows: [row] };
-    } else if (cur2 && (!c0 || /^(front|back)$/i.test(c0))) {
+    } else if (cur2 && (!c0 || /^(front|back|side)$/i.test(c0))) {
       if (!cur2.contractor && iContractor >= 0) { const v=(row[iContractor]||'').trim(); if(v) cur2.contractor=v; }
       cur2.rows.push(row);
     }
   }
   if (cur2) floorGroups.push(cur2);
 
-  // ── Build items ───────────────────────────────────────────
+  // ── Build items: one per floor per GRC Installation column ──
   const items = [];
   for (const g of floorGroups) {
-    const grcVals = g.rows.flatMap(r => grcInstIdxs.map(i => (r[i]||'').toUpperCase().trim())).filter(v => v);
-    const grcTrue = grcVals.filter(v => v === 'TRUE').length;
-    const grcNotes= grcVals.filter(v => v !== 'TRUE' && v !== 'FALSE');
-    const meshDone  = g.rows.some(r => iMesh   >= 0 && (r[iMesh]  ||'').toUpperCase().trim() === 'TRUE');
-    const finalDone = g.rows.some(r => iFinal  >= 0 && (r[iFinal] ||'').toUpperCase().trim() === 'TRUE');
-    const plasterDone=g.rows.some(r => iPlaster>= 0 && (r[iPlaster]||'').toUpperCase().trim() === 'TRUE');
-    const totalGRC  = grcVals.length;
-
-    let status, done, remark;
-    if (finalDone) {
-      status = 'done'; done = 1; remark = 'GRC Final ✓';
-    } else if (grcTrue > 0 || plasterDone || meshDone) {
-      status = 'delay'; done = 0;
-      const pts = [];
-      if (grcTrue > 0)  pts.push(grcTrue === totalGRC && totalGRC > 0 ? 'Install ✓' : `Install ${grcTrue}/${totalGRC}`);
-      if (plasterDone)  pts.push('Plaster ✓');
-      if (meshDone)     pts.push('Mesh ✓');
-      if (grcNotes.length) pts.push(grcNotes[0]);
-      remark = (pts.join(' · ') || '') + ' · Final pending';
-    } else if (grcNotes.length > 0) {
-      status = 'delay'; done = 0; remark = grcNotes[0];
-    } else {
-      status = 'pending'; done = 0; remark = '';
+    for (const col of grcCols) {
+      const colVals = g.rows.map(r => (r[col.idx]||'').toUpperCase().trim());
+      const isDone  = colVals.some(v => v === 'TRUE');
+      const hasNote = colVals.find(v => v && v !== 'TRUE' && v !== 'FALSE');
+      let status, remark;
+      if (isDone)        { status = 'done';    remark = ''; }
+      else if (hasNote)  { status = 'delay';   remark = hasNote; }
+      else               { status = 'pending'; remark = ''; }
+      items.push({
+        contractor: g.contractor || 'GRC',
+        tower:  towerLabel,
+        side:   col.side,
+        label:  `${towerLabel} – ${g.label}`,
+        done:   isDone ? 1 : 0, total: 1, status, remark,
+        stageNames: ['GRC Install'],
+        states: [isDone ? 'TRUE' : (hasNote || 'FALSE')],
+      });
     }
-
-    items.push({
-      contractor: g.contractor || 'GRC',
-      tower: towerLabel,
-      label: `${towerLabel} – ${g.label}`,
-      done, total: 1, status, remark,
-      stageNames: ['GRC Install', 'Plaster', 'Mesh', 'Final Check'],
-      states: [
-        totalGRC > 0 ? (grcTrue === totalGRC ? 'TRUE' : grcTrue > 0 ? `${grcTrue}/${totalGRC}` : 'FALSE') : '—',
-        plasterDone  ? 'TRUE' : 'FALSE',
-        meshDone     ? 'TRUE' : 'FALSE',
-        finalDone    ? 'TRUE' : 'FALSE',
-      ],
-    });
   }
   return items;
 }
@@ -2093,11 +2103,10 @@ async function loadCategory(key) {
       fetchSheet(f.fileId).then(md => parseMEPSheet(md, f.contractor, f.defaultTower)).catch(()=>[])
     ));
     parsed = all.flat();
-  } else if (key === 'grc') {
-    parsed = await loadGRCExecution('1sdYkcMQaSx4gHj-tcPkKph1FoSp9zAfLqLLwPnQor7Q');
   } else if (key === 'facade') {
     // fileId-based parser overrides for facade sheets that don't fit the generic boolean-stage parser
     const SPANDREL_ID = '1PAn4OG0Swr3GmaG5KsceR5rVLPYt8uq5wdYfcEQIUm8';
+    const GRC_ID     = '1sdYkcMQaSx4gHj-tcPkKph1FoSp9zAfLqLLwPnQor7Q';
     const FACADE_OVERRIDES = {
       '1xKCbALNOZb9gOE2turvdtVuyOqD5AXqVsc1UhuNdW1Y': parseKrishnaFacade,
       '1Fis0XdnyzqlvxUOCgK6is1hER5flR2cCfp9Jeqs7Ygw': parseBaffleCeiling,
@@ -2109,6 +2118,10 @@ async function loadCategory(key) {
     const all = await Promise.all(FACADE_FILES.map(f => {
       // Spandrel Glazing: custom multi-tab loader (Tower 1, 5, 6)
       if (f.fileId === SPANDREL_ID) return loadSpandrelGlazing(SPANDREL_ID).catch(()=>[]);
+      // GRC: custom per-tower parser; all items tagged contractor='GRC' for Facade sub-filter
+      if (f.fileId === GRC_ID) return loadGRCExecution(GRC_ID)
+        .then(items => items.map(it => ({ ...it, contractor: 'GRC' })))
+        .catch(()=>[]);
       return fetchSheet(f.fileId).then(md => {
         const overrideParser = FACADE_OVERRIDES[f.fileId];
         return overrideParser
@@ -2237,7 +2250,6 @@ async function renderTendering() {
 const WORK_SUBS = [
   { key:'facade',      label:'Facade',             icon:'🏢', wave:4, live:true },
   { key:'interior',    label:'Interior',           icon:'🛋️', wave:5, live:true },
-  { key:'grc',         label:'GRC',                icon:'🏗️', wave:5, live:true },
   { key:'mechanical',  label:'Mechanical',         icon:'🌡️', wave:2, live:true },
   { key:'electrical',  label:'Electrical',         icon:'⚡',  wave:3, live:true },
   { key:'fire',        label:'Fire',               icon:'🔥', wave:3, live:true },
@@ -2250,7 +2262,6 @@ const WORK_SUBS = [
   { key:'hoi',         label:'HOI',                icon:'🏠', wave:6, live:true, custom:'hoi' },
   { key:'sampleFlats', label:'Sample Flats',       icon:'🛏️', wave:6, live:true, custom:'sampleFlats' },
   { key:'commonAreas', label:'Common areas',       icon:'🏛️', live:true, custom:'commonAreas' },
-  { key:'facadeItems', label:'Facade Items',       icon:'📂', live:true, custom:'facadeItems' },
 ];
 function subnavHtml(items, active, getMeta) {
   return `<div class="subnav">${items.map(s => {
@@ -2330,6 +2341,7 @@ async function renderWork() {
     let items = allItems;
     let itemNav = '';
     let locationNav = '';
+    let sideNav = '';
     let breadcrumb = '';
     // Compute unique Items (contractor field). For Facade this is the item name; for MEP tabs this is the contractor.
     const allItemNames = [...new Set(allItems.map(r => r.contractor))].filter(Boolean).sort();
@@ -2371,6 +2383,24 @@ async function renderWork() {
         breadcrumb += ` · ${escapeHtml(activeWorkLocation)}`;
       }
     }
+    // Side / Area filter — present when items carry a `side` property (GRC data)
+    const allSides = [...new Set(items.map(r => r.side).filter(Boolean))].sort();
+    if (allSides.length >= 2) {
+      const sideCounts = allSides.reduce((a, s) => { a[s] = items.filter(r => r.side === s).length; return a; }, {});
+      sideNav = `<div style="font-size:10px;font-weight:700;color:#94a3b8;letter-spacing:1.5px;text-transform:uppercase;margin-bottom:8px;margin-top:14px">🔲 Side / Area</div>
+        <div class="subnav">
+          <button class="sub-btn${activeWorkSide==='all'?' active':''}" data-work-side="all">
+            <div class="icon">🌐</div><div class="label">All Sides</div><div class="meta">${items.length} rows</div>
+          </button>
+          ${allSides.map(s => `<button class="sub-btn${activeWorkSide===s?' active':''}" data-work-side="${escapeHtml(s)}">
+            <div class="icon">🔲</div><div class="label">${escapeHtml(s)}</div><div class="meta">${sideCounts[s]||0} rows</div>
+          </button>`).join('')}
+        </div>`;
+      if (activeWorkSide !== 'all') {
+        items = items.filter(r => r.side === activeWorkSide);
+        breadcrumb += ` · ${escapeHtml(activeWorkSide)}`;
+      }
+    }
     const counts = { done:0, delay:0, pending:0 };
     items.forEach(it => counts[it.status]++);
     const tab = STATUS_TABS.find(t => t.key === activeWorkStatus);
@@ -2401,6 +2431,7 @@ async function renderWork() {
       ${liveBar('live', allItems.length, SOURCE_LABELS[sub.key]||'')}
       ${itemNav}
       ${locationNav}
+      ${sideNav}
       ${statusCardsHtml(STATUS_TABS, counts, activeWorkStatus)}
       <div class="tbl-wrap" style="border-color:${tab.border}">
         <div class="tbl-head" style="background:${tab.bg};border-bottom:1px solid ${tab.border}">
@@ -2415,6 +2446,7 @@ async function renderWork() {
         activeWorkSub = b.dataset.key;
         activeWorkItem = 'all';
         activeWorkLocation = 'all';
+        activeWorkSide = 'all';
         renderWork();
       });
     });
@@ -2422,11 +2454,15 @@ async function renderWork() {
       b.addEventListener('click', () => {
         activeWorkItem = b.dataset.workItem;
         activeWorkLocation = 'all'; // reset location when item changes
+        activeWorkSide = 'all';
         renderWork();
       });
     });
     container.querySelectorAll('[data-work-loc]').forEach(b => {
-      b.addEventListener('click', () => { activeWorkLocation = b.dataset.workLoc; renderWork(); });
+      b.addEventListener('click', () => { activeWorkLocation = b.dataset.workLoc; activeWorkSide = 'all'; renderWork(); });
+    });
+    container.querySelectorAll('[data-work-side]').forEach(b => {
+      b.addEventListener('click', () => { activeWorkSide = b.dataset.workSide; renderWork(); });
     });
     container.querySelectorAll('.card').forEach(b => {
       b.addEventListener('click', () => { activeWorkStatus = b.dataset.status; renderWork(); });
@@ -2438,6 +2474,7 @@ async function renderWork() {
         activeWorkSub = b.dataset.key;
         activeWorkItem = 'all';
         activeWorkLocation = 'all';
+        activeWorkSide = 'all';
         renderWork();
       });
     });
