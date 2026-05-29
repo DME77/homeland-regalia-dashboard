@@ -585,11 +585,12 @@ async function fetchSheet(fileId) {
   return md;
 }
 // File metadata isn't available from the public CSV endpoint without an API key.
-// Return a synthetic "now" stamp so the "last edited" panels still render.
+// Return null modifiedTime so the "Sheet last edited" panel shows "unavailable"
+// rather than a misleading current timestamp.
 const _metaCache = {};
 async function fetchSheetMetadata(fileId) {
   if (_metaCache[fileId] !== undefined) return _metaCache[fileId];
-  _metaCache[fileId] = { modifiedTime: new Date().toISOString(), title: null };
+  _metaCache[fileId] = { modifiedTime: null, title: null };
   return _metaCache[fileId];
 }
 // Drive-folder listing isn't available publicly either. Return empty so the
