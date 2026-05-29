@@ -405,6 +405,7 @@ let activeWorkItem = 'all';     // Within a live work sub-tab: which Item/Contra
 let activeWorkLocation = 'all'; // Within a live work sub-tab: which Tower/Location is selected
 let activeWorkSide      = 'all'; // GRC area/side filter within Facade
 let activeGlassStage    = 'all'; // Glass Railing stage sub-filter: all | granite-done | channel-done | railing-done
+let activeBaffleType    = 'all'; // Baffle Ceiling work-type sub-filter: all | Framing Work | Baffle Sheet Installation
 let activeDrawingsStatus = 'pending'; // Drawings tab default status filter
 let activeDrawingsLocation = 'all';   // Drawings tab Location filter
 let activeHoiSection = 'flats';       // HOI category: 'flats' or 'items'
@@ -2000,87 +2001,88 @@ function parseKrishnaFacade(md, contractorTag, defaultTower) {
   return items;
 }
 
-// Baffle Ceiling — bespoke parser. Each tower has a summary block with
-// `Tower N | Total in SQft | Achived | % | Balance | Plan/Achieve dates...`
-// followed by two data rows: Framing Work and Baffle Sheet Installation.
-// Per-tower floor-side / detail blocks are skipped — they're harder to map cleanly.
-// Produces one item per tower (T1..T6) summarising Framing% and Baffle Install%.
-function parseBaffleCeiling(md, contractorTag, defaultTower) {
-  const lines = splitTableRows(md);
-  const towers = {}; // tower → { framing: {...}, baffle: {...} }
-  let curTower = '';
-  let inSummary = false;
-  for (const line of lines) {
-    const c = parseRow(line);
-    const head = c.map(h => (h||'').toUpperCase().trim());
-    const towerMatch = head[0] && head[0].match(/TOWER\s*(\d)/);
-    const hasSqftCol = head.some(h => h.includes('TOTAL IN SQFT') || h.includes('TOTAL IN SQ') || h.includes('ACHIVED IN SQFT'));
-    const isSummaryHeader = towerMatch && hasSqftCol;
-    if (isSummaryHeader) {
-      curTower = 'T' + towerMatch[1];
-      if (!towers[curTower]) towers[curTower] = {};
-      inSummary = true;
-      continue;
-    }
-    // Other headers (Floor No./Side, Details, "Tower N | Homeland Regalia") — exit summary capture
-    const isOtherHeader = head[0] && (
-      head[0].includes('FLOOR NO') ||
-      head[0].includes('DETAILS') ||
-      (towerMatch && !isSummaryHeader)
-    );
-    if (isOtherHeader) { inSummary = false; continue; }
-    if (!inSummary || !curTower) continue;
-    const rowType = (c[0]||'').trim().toLowerCase();
-    const stats = {
-      total:    parseFloat((c[1]||'').toString().replace(/,/g,'')) || 0,
-      achieved: parseFloat((c[2]||'').toString().replace(/,/g,'')) || 0,
-      percent:  parseFloat((c[3]||'').toString().replace('%','')) || 0,
-      balance:  parseFloat((c[4]||'').toString().replace(/,/g,'')) || 0,
-      firstNote: (c[5]||'').trim(),
-      lastNote:  (c[c.length-1]||'').trim(),
-    };
-    if (rowType.includes('framing')) {
-      towers[curTower].framing = stats;
-    } else if (rowType.includes('baffle') || rowType.includes('sheet install')) {
-      towers[curTower].baffle = stats;
+// ─── Baffle Ceiling — per-tower sqft summary (T-01 … T-06 tabs) ────────────
+// Each T-0X tab has two data rows: "Framing Work[…]" and "Baffle Sheet Installation[…]"
+// Columns: 0=label | 1=Total SQft | 2=Achieved SQft | 3=% | 4=Balance | 5+= milestones/remark
+// renderStyle:'sqft' triggers the custom sqft table in renderWork.
+function parseBaffleCeilingTab(csv, towerLabel) {
+  const rows = [];
+  let row = [], field = '', inQ = false;
+  for (let i = 0; i <= csv.length; i++) {
+    const ch = i < csv.length ? csv[i] : '\n';
+    if (inQ) {
+      if (ch === '"' && csv[i+1] === '"') { field += '"'; i++; }
+      else if (ch === '"') inQ = false;
+      else field += ch;
+    } else {
+      if (ch === '"') inQ = true;
+      else if (ch === ',') { row.push(field.trim()); field = ''; }
+      else if (ch === '\n' || ch === '\r') {
+        if (ch === '\r' && csv[i+1] === '\n') i++;
+        row.push(field.trim());
+        if (row.some(c => c)) rows.push(row);
+        row = []; field = '';
+      } else field += ch;
     }
   }
-  // Build one item per tower
+  if (field || row.length) { row.push(field.trim()); if (row.some(c => c)) rows.push(row); }
+
+  const parseNum = v => { const n = parseFloat((v||'').replace(/[,%\s]/g,'').replace(/sqft/gi,'')); return isNaN(n) ? 0 : n; };
   const items = [];
-  Object.keys(towers).sort().forEach(tower => {
-    const data = towers[tower];
-    if (!data.framing && !data.baffle) return;
-    const f = data.framing, b = data.baffle;
-    const fPct = f ? Math.round(f.percent) : 0;
-    const bPct = b ? Math.round(b.percent) : 0;
-    let status;
-    if (fPct === 100 && bPct === 100) status = 'done';
-    else if (fPct === 0 && bPct === 0)  status = 'pending';
-    else status = 'delay';
-    const done = (fPct === 100 ? 1 : 0) + (bPct === 100 ? 1 : 0);
-    const remarkParts = [];
-    if (f) remarkParts.push(`Framing ${fPct}% (${f.balance} sqft balance)`);
-    if (b) remarkParts.push(`Baffle ${bPct}% (${b.balance} sqft balance)`);
-    const noteFilter = (n) => n && n.length > 3 && !/^\d/.test(n) && !/^TRUE$|^FALSE$|^NA$/i.test(n);
-    if (f && noteFilter(f.firstNote))  remarkParts.push(`F note: ${f.firstNote}`);
-    if (b && noteFilter(b.firstNote))  remarkParts.push(`B note: ${b.firstNote}`);
-    if (f && noteFilter(f.lastNote) && /complete|pending|power|clearance|done/i.test(f.lastNote))
-      remarkParts.push(`F: ${f.lastNote}`);
-    if (b && noteFilter(b.lastNote) && /complete|pending|power|clearance|done/i.test(b.lastNote))
-      remarkParts.push(`B: ${b.lastNote}`);
+
+  for (const r of rows) {
+    const label0 = (r[0]||'').trim().toUpperCase();
+    const isFraming = label0.startsWith('FRAMING');
+    const isBaffle  = label0.startsWith('BAFFLE') || label0.includes('SHEET INSTALL');
+    if (!isFraming && !isBaffle) continue;
+
+    const workType = isFraming ? 'Framing Work' : 'Baffle Sheet Installation';
+    const total    = parseNum(r[1]);
+    const achieved = parseNum(r[2]);
+    if (total === 0) continue;
+    const balance  = Math.max(total - achieved, 0);
+    const pct      = Math.round(achieved / total * 100);
+
+    // Remark = last meaningful text cell from col 5 onward
+    let remark = '';
+    for (let k = r.length - 1; k >= 5; k--) {
+      const v = (r[k]||'').trim();
+      if (v && !/^\d+(\.\d+)?$/.test(v) && !/^\d{1,2}[-\/]\w+/.test(v) && v.length > 2) { remark = v; break; }
+    }
+
     items.push({
-      contractor: contractorTag,
-      tower,
-      label:      `${tower} – Baffle Ceiling`,
-      done, total: 2,
-      states:     [`Framing ${fPct}%`, `Baffle ${bPct}%`],
-      stageNames: ['Framing', 'Baffle Installation'],
-      status,
-      remark:     remarkParts.join(' · '),
+      contractor: 'Baffle Ceiling',
+      tower: towerLabel,
+      workType,
+      label: workType,
+      done: achieved, total,
+      status: pct >= 100 ? 'done' : pct > 0 ? 'delay' : 'pending',
+      remark,
+      sqftData: { total, achieved, balance, pct },
+      renderStyle: 'sqft',
     });
-  });
+  }
   return items;
 }
+
+async function loadBaffleCeiling(fileId) {
+  const tabs = [
+    { gid: 1918892527, tower: 'T1' },
+    { gid: 1649109462, tower: 'T2' },
+    { gid: 932835331,  tower: 'T3' },
+    { gid: 1986379824, tower: 'T4' },
+    { gid: 278131408,  tower: 'T5' },
+    { gid: 788578097,  tower: 'T6' },
+  ];
+  const results = await Promise.all(tabs.map(async ({ gid, tower }) => {
+    try { return parseBaffleCeilingTab(await fetchSheetTabRaw(fileId, gid), tower); }
+    catch { return []; }
+  }));
+  return results.flat();
+}
+
+// Legacy stub — actual loading done by loadBaffleCeiling (special-cased in loadCategory).
+function parseBaffleCeiling(md, contractorTag, defaultTower) { return []; }
 
 // Club Facade summary parser — shared across Club facade Art N Glass, Club Area Kazmi,
 // and Club Tile (Sr Innovation). All three sheets use the same layout:
@@ -2366,6 +2368,7 @@ async function loadCategory(key) {
     const SPANDREL_ID      = '1PAn4OG0Swr3GmaG5KsceR5rVLPYt8uq5wdYfcEQIUm8';
     const GRC_ID           = '1sdYkcMQaSx4gHj-tcPkKph1FoSp9zAfLqLLwPnQor7Q';
     const GLASS_RAILING_ID = '1-CuQg-27_d36PsSRs5PMkBlVm6qdPXDNSS3P1nAmoPc';
+    const BAFFLE_ID        = '1Fis0XdnyzqlvxUOCgK6is1hER5flR2cCfp9Jeqs7Ygw';
     const FACADE_OVERRIDES = {
       '1xKCbALNOZb9gOE2turvdtVuyOqD5AXqVsc1UhuNdW1Y': parseKrishnaFacade,
       '1Fis0XdnyzqlvxUOCgK6is1hER5flR2cCfp9Jeqs7Ygw': parseBaffleCeiling,
@@ -2384,6 +2387,8 @@ async function loadCategory(key) {
         .catch(()=>[]);
       // Glass Railing: dedicated per-tower loader with named stage breakdown
       if (f.fileId === GLASS_RAILING_ID) return loadGlassRailingExecution(GLASS_RAILING_ID).catch(()=>[]);
+      // Baffle Ceiling: dedicated per-tower sqft summary loader (T-01…T-06 tabs)
+      if (f.fileId === BAFFLE_ID) return loadBaffleCeiling(BAFFLE_ID).catch(()=>[]);
       return fetchSheet(f.fileId).then(md => {
         const overrideParser = FACADE_OVERRIDES[f.fileId];
         return overrideParser
@@ -2565,6 +2570,11 @@ function subnavHtml(items, active, getMeta) {
   }).join('')}</div>`;
 }
 async function renderWork() {
+  // Persist nav state so browser refresh restores the same view
+  localStorage.setItem('activeWorkSub',      activeWorkSub);
+  localStorage.setItem('activeWorkItem',     activeWorkItem);
+  localStorage.setItem('activeWorkLocation', activeWorkLocation);
+  localStorage.setItem('activeWorkStatus',   activeWorkStatus);
   const container = document.getElementById('tab-work');
   const sub = WORK_SUBS.find(s => s.key === activeWorkSub);
   const subnav = subnavHtml(WORK_SUBS, activeWorkSub, s => s.live ? '🟢 Live' : `Wave ${s.wave}`);
@@ -2641,9 +2651,6 @@ async function renderWork() {
       const itemCounts = allItemNames.reduce((a, n) => { a[n] = allItems.filter(r => r.contractor === n).length; return a; }, {});
       itemNav = `<div style="font-size:10px;font-weight:700;color:#94a3b8;letter-spacing:1.5px;text-transform:uppercase;margin-bottom:8px">${itemIcon} ${itemLabel}</div>
         <div class="subnav">
-          <button class="sub-btn${activeWorkItem==='all'?' active':''}" data-work-item="all">
-            <div class="icon">📋</div><div class="label">All ${escapeHtml(itemLabel)}s</div><div class="meta">${allItems.length} rows</div>
-          </button>
           ${allItemNames.map(n => `<button class="sub-btn${activeWorkItem===n?' active':''}" data-work-item="${escapeHtml(n)}">
             <div class="icon">${sub.key==='facade'?'📦':'🛠️'}</div><div class="label">${escapeHtml(n)}</div><div class="meta">${itemCounts[n]||0} rows</div>
           </button>`).join('')}
@@ -2653,21 +2660,61 @@ async function renderWork() {
         breadcrumb = ` · ${escapeHtml(activeWorkItem)}`;
       }
     }
+    // ── Baffle Ceiling work-type sub-filter (Framing Work / Baffle Sheet Installation) ──
+    let baffleTypeNav = '';
+    if (activeWorkItem === 'Baffle Ceiling' && items.some(r => r.workType)) {
+      const cntAll     = items.length;
+      const cntFraming = items.filter(r => r.workType === 'Framing Work').length;
+      const cntBaffle  = items.filter(r => r.workType === 'Baffle Sheet Installation').length;
+      const btBtn = (key, icon, label, count) => {
+        const isA = activeBaffleType === key;
+        return `<button class="sub-btn${isA?' active':''}" data-baffle-type="${escapeHtml(key)}">
+          <div class="icon">${icon}</div><div class="label">${label}</div><div class="meta">${count} towers</div>
+        </button>`;
+      };
+      baffleTypeNav = `<div style="font-size:10px;font-weight:700;color:#94a3b8;letter-spacing:1.5px;text-transform:uppercase;margin-bottom:8px;margin-top:14px">🏗️ Work Type</div>
+        <div class="subnav">
+          ${btBtn('Framing Work',             '🪵', 'Framing Work',             cntFraming)}
+          ${btBtn('Baffle Sheet Installation','🏗️', 'Baffle Sheet Installation', cntBaffle)}
+        </div>`;
+      if (activeBaffleType !== 'all') {
+        items = items.filter(r => r.workType === activeBaffleType);
+        breadcrumb += ` · ${activeBaffleType}`;
+      }
+    }
     // Location picker — show whenever we have multiple towers in the current item-filtered set.
     // For Waterproof (no contractor variation), this picker becomes the primary filter.
     const allLocs = [...new Set(items.map(r => r.tower))].filter(Boolean).sort();
+    const isSqftMode = items.length > 0 && items.every(r => r.renderStyle === 'sqft');
     if (allLocs.length >= 2 && (allItemNames.length < 2 || activeWorkItem !== 'all')) {
       const locCounts = allLocs.reduce((a, l) => { a[l] = items.filter(r => r.tower === l).length; return a; }, {});
       const locDone   = allLocs.reduce((a, l) => { a[l] = items.filter(r => r.tower === l && r.status === 'done').length; return a; }, {});
       const totalDone = items.filter(r => r.status === 'done').length;
       const locIcon = (l) => l==='COMM'?'🏛️':l==='BSMT'?'🅿️':l==='OTHER'?'❔':l.startsWith('T')?'🏢':'📍';
+      // For sqft items (Baffle Ceiling) show achieved/total sqft in location buttons
+      const locMetaText = (l) => {
+        if (isSqftMode) {
+          const li = items.filter(r => r.tower === l);
+          const tot = li.reduce((a,r) => a+(r.sqftData?.total||0),0);
+          const ach = li.reduce((a,r) => a+(r.sqftData?.achieved||0),0);
+          const p   = tot ? Math.round(ach/tot*100) : 0;
+          return `${p}% done`;
+        }
+        return `${locDone[l]||0}/${locCounts[l]||0} done`;
+      };
+      const allMetaText = isSqftMode ? (() => {
+        const tot = items.reduce((a,r)=>a+(r.sqftData?.total||0),0);
+        const ach = items.reduce((a,r)=>a+(r.sqftData?.achieved||0),0);
+        return tot ? `${Math.round(ach/tot*100)}% done` : '—';
+      })() : `${totalDone}/${items.length} done`;
+      const showAllLocBtn = activeWorkItem !== 'GRC';
       locationNav = `<div style="font-size:10px;font-weight:700;color:#94a3b8;letter-spacing:1.5px;text-transform:uppercase;margin-bottom:8px;margin-top:14px">📍 Location</div>
         <div class="subnav">
-          <button class="sub-btn${activeWorkLocation==='all'?' active':''}" data-work-loc="all">
-            <div class="icon">🌐</div><div class="label">All</div><div class="meta">${totalDone}/${items.length} done</div>
-          </button>
+          ${showAllLocBtn ? `<button class="sub-btn${activeWorkLocation==='all'?' active':''}" data-work-loc="all">
+            <div class="icon">🌐</div><div class="label">All</div><div class="meta">${allMetaText}</div>
+          </button>` : ''}
           ${allLocs.map(l => `<button class="sub-btn${activeWorkLocation===l?' active':''}" data-work-loc="${escapeHtml(l)}">
-            <div class="icon">${locIcon(l)}</div><div class="label">${escapeHtml(l)}</div><div class="meta">${locDone[l]||0}/${locCounts[l]||0} done</div>
+            <div class="icon">${locIcon(l)}</div><div class="label">${escapeHtml(l)}</div><div class="meta">${locMetaText(l)}</div>
           </button>`).join('')}
         </div>`;
       if (activeWorkLocation !== 'all') {
@@ -2675,15 +2722,13 @@ async function renderWork() {
         breadcrumb += ` · ${escapeHtml(activeWorkLocation)}`;
       }
     }
-    // Side / Area filter — only visible when GRC item is selected
-    const allSides = activeWorkItem === 'GRC' ? [...new Set(items.map(r => r.side).filter(Boolean))].sort() : [];
+    // Side / Area filter — only when GRC item AND a specific location (tower) is selected
+    const allSides = (activeWorkItem === 'GRC' && activeWorkLocation !== 'all')
+      ? [...new Set(items.map(r => r.side).filter(Boolean))].sort() : [];
     if (allSides.length >= 2) {
       const sideCounts = allSides.reduce((a, s) => { a[s] = items.filter(r => r.side === s).length; return a; }, {});
       sideNav = `<div style="font-size:10px;font-weight:700;color:#94a3b8;letter-spacing:1.5px;text-transform:uppercase;margin-bottom:8px;margin-top:14px">🔲 Side / Area</div>
         <div class="subnav">
-          <button class="sub-btn${activeWorkSide==='all'?' active':''}" data-work-side="all">
-            <div class="icon">🌐</div><div class="label">All Sides</div><div class="meta">${items.length} rows</div>
-          </button>
           ${allSides.map(s => `<button class="sub-btn${activeWorkSide===s?' active':''}" data-work-side="${escapeHtml(s)}">
             <div class="icon">🔲</div><div class="label">${escapeHtml(s)}</div><div class="meta">${sideCounts[s]||0} rows</div>
           </button>`).join('')}
@@ -2733,7 +2778,9 @@ async function renderWork() {
     const counts = { done:0, delay:0, pending:0 };
     items.forEach(it => counts[it.status]++);
     const tab = STATUS_TABS.find(t => t.key === activeWorkStatus);
-    const filtered = items.filter(it => it.status === activeWorkStatus);
+    // In sqft mode (Baffle Ceiling) show ALL towers regardless of status —
+    // the % column is the status indicator; no status card filtering needed.
+    const filtered = isSqftMode ? items : items.filter(it => it.status === activeWorkStatus);
     const pillStyles = { done:'background:#dcfce7;color:#16a34a', delay:'background:#fee2e2;color:#dc2626', pending:'background:#fef3c7;color:#b45309' };
     const pillText = { done:'Done', delay:'Delayed / Partial', pending:'Pending' };
     const cap = 300;
@@ -2743,33 +2790,64 @@ async function renderWork() {
     const showLabelCol = allItemNames.length >= 2 && activeWorkItem === 'all';
     const uniqueTowersInSet = [...new Set(items.map(r => r.tower).filter(Boolean))];
     const showTowerCol = uniqueTowersInSet.length > 1 && activeWorkLocation === 'all';
+    const showWorkTypeCol = isSqftMode && [...new Set(display.map(r => r.workType))].length > 1;
     const labelHeader = showLabelCol ? `<th>${escapeHtml(itemLabel)}</th>` : '';
+    // ── sqft table (Baffle Ceiling) vs generic table ──
     const tableHtml = filtered.length === 0
       ? `<div class="empty">No items in this status.</div>`
-      : `<table><thead><tr><th>#</th>${labelHeader}${showTowerCol?'<th>Tower</th>':''}<th>Location</th><th>Work Completion</th><th style="text-align:center">Status</th><th>Remark</th></tr></thead><tbody>${
-        display.map((r,i) => `<tr>
-          <td>${i+1}</td>
-          ${showLabelCol?`<td style="font-weight:600;color:#475569">${escapeHtml(r.contractor||'—')}</td>`:''}
-          ${showTowerCol?`<td style="font-weight:600;color:#1e3a5f">${escapeHtml(r.tower||'—')}</td>`:''}
-          <td class="loc">${escapeHtml(r.label)}</td>
-          <td>${(() => {
-              const pct = Math.round((r.done / Math.max(r.total, 1)) * 100);
-              const c  = pct === 100 ? '#16a34a' : pct === 0 ? '#94a3b8' : '#b45309';
-              const bg = pct === 100 ? '#dcfce7' : pct === 0 ? '#f1f5f9' : '#fef3c7';
-              return `<span style="font-size:13px;font-weight:700;padding:2px 8px;border-radius:6px;background:${bg};color:${c}">${pct}%</span>`;
-            })()}</td>
-          <td style="text-align:center"><span class="pill" style="${pillStyles[r.status]}">${pillText[r.status]}</span></td>
-          <td style="color:${r.remark?'#6b7280':'#d1d5db'};font-style:${r.remark?'normal':'italic'}">${escapeHtml(r.remark||'—')}</td>
-        </tr>`).join('')}</tbody></table>${filtered.length>cap?`<div style="padding:10px 12px;font-size:11px;color:#94a3b8;text-align:center">Showing first ${cap} of ${filtered.length} — use filters to narrow</div>`:''}`;
+      : isSqftMode
+        ? `<table><thead><tr>
+            <th>#</th>
+            ${showTowerCol ? '<th>Tower</th>' : ''}
+            ${showWorkTypeCol ? '<th>Work Type</th>' : ''}
+            <th style="text-align:right">Total (SQft)</th>
+            <th style="text-align:right">Achieved (SQft)</th>
+            <th style="text-align:right">Balance (SQft)</th>
+            <th>Work Completion</th>
+            <th>Remark</th>
+          </tr></thead><tbody>${
+          display.map((r,i) => {
+            const d = r.sqftData || { total:0, achieved:0, balance:0, pct:0 };
+            const p = d.total > 0 ? Math.round(d.achieved/d.total*100) : 0;
+            const c = p===100?'#16a34a':p===0?'#94a3b8':'#b45309';
+            const bg= p===100?'#dcfce7':p===0?'#f1f5f9':'#fef3c7';
+            return `<tr>
+              <td>${i+1}</td>
+              ${showTowerCol?`<td style="font-weight:700;color:#1e3a5f">${escapeHtml(r.tower||'—')}</td>`:''}
+              ${showWorkTypeCol?`<td style="font-weight:600;color:#475569">${escapeHtml(r.workType||'—')}</td>`:''}
+              <td style="text-align:right;font-weight:600">${(d.total||0).toLocaleString()}</td>
+              <td style="text-align:right;color:#16a34a;font-weight:600">${(d.achieved||0).toLocaleString()}</td>
+              <td style="text-align:right;color:${d.balance>0?'#dc2626':'#16a34a'};font-weight:600">${(d.balance||0).toLocaleString()}</td>
+              <td><span style="font-size:13px;font-weight:700;padding:2px 8px;border-radius:6px;background:${bg};color:${c}">${p}%</span></td>
+              <td style="color:${r.remark?'#6b7280':'#d1d5db'};font-style:${r.remark?'normal':'italic'}">${escapeHtml(r.remark||'—')}</td>
+            </tr>`;
+          }).join('')
+          }</tbody></table>${filtered.length>cap?`<div style="padding:10px 12px;font-size:11px;color:#94a3b8;text-align:center">Showing first ${cap} of ${filtered.length}</div>`:''}`
+        : `<table><thead><tr><th>#</th>${labelHeader}${showTowerCol?'<th>Tower</th>':''}<th>Location</th><th>Work Completion</th><th style="text-align:center">Status</th><th>Remark</th></tr></thead><tbody>${
+          display.map((r,i) => `<tr>
+            <td>${i+1}</td>
+            ${showLabelCol?`<td style="font-weight:600;color:#475569">${escapeHtml(r.contractor||'—')}</td>`:''}
+            ${showTowerCol?`<td style="font-weight:600;color:#1e3a5f">${escapeHtml(r.tower||'—')}</td>`:''}
+            <td class="loc">${escapeHtml(r.label)}</td>
+            <td>${(() => {
+                const pct = Math.round((r.done / Math.max(r.total, 1)) * 100);
+                const c  = pct === 100 ? '#16a34a' : pct === 0 ? '#94a3b8' : '#b45309';
+                const bg = pct === 100 ? '#dcfce7' : pct === 0 ? '#f1f5f9' : '#fef3c7';
+                return `<span style="font-size:13px;font-weight:700;padding:2px 8px;border-radius:6px;background:${bg};color:${c}">${pct}%</span>`;
+              })()}</td>
+            <td style="text-align:center"><span class="pill" style="${pillStyles[r.status]}">${pillText[r.status]}</span></td>
+            <td style="color:${r.remark?'#6b7280':'#d1d5db'};font-style:${r.remark?'normal':'italic'}">${escapeHtml(r.remark||'—')}</td>
+          </tr>`).join('')}</tbody></table>${filtered.length>cap?`<div style="padding:10px 12px;font-size:11px;color:#94a3b8;text-align:center">Showing first ${cap} of ${filtered.length} — use filters to narrow</div>`:''}`;
     container.innerHTML = `
       <div class="eyebrow">${sub.icon} ${escapeHtml(sub.label)}${breadcrumb} <span class="tag live">LIVE</span></div>
       ${subnav}
       ${liveBar('live', allItems.length, SOURCE_LABELS[sub.key]||'')}
       ${itemNav}
+      ${baffleTypeNav}
       ${locationNav}
       ${sideNav}
       ${glassStageNav}
-      ${statusCardsHtml(STATUS_TABS, counts, activeWorkStatus)}
+      ${isSqftMode ? '' : statusCardsHtml(STATUS_TABS, counts, activeWorkStatus)}
       <div class="tbl-wrap" style="border-color:${tab.border}">
         <div class="tbl-head" style="background:${tab.bg};border-bottom:1px solid ${tab.border}">
           <span>${tab.icon}</span>
@@ -2793,6 +2871,7 @@ async function renderWork() {
         activeWorkLocation = 'all'; // reset location when item changes
         activeWorkSide = 'all';
         activeGlassStage = 'all';
+        activeBaffleType = b.dataset.workItem === 'Baffle Ceiling' ? 'Framing Work' : 'all';
         renderWork();
       });
     });
@@ -2804,6 +2883,9 @@ async function renderWork() {
     });
     container.querySelectorAll('[data-glass-stage]').forEach(b => {
       b.addEventListener('click', () => { activeGlassStage = b.dataset.glassStage; renderWork(); });
+    });
+    container.querySelectorAll('[data-baffle-type]').forEach(b => {
+      b.addEventListener('click', () => { activeBaffleType = b.dataset.baffleType; renderWork(); });
     });
     container.querySelectorAll('.card').forEach(b => {
       b.addEventListener('click', () => { activeWorkStatus = b.dataset.status; renderWork(); });
@@ -3896,6 +3978,8 @@ async function renderWatconInto(host) {
 
 // ─── DRAWINGS TAB ─────────────────────────────────────────
 async function renderDrawings() {
+  localStorage.setItem('activeDrawingsStatus',  activeDrawingsStatus);
+  localStorage.setItem('activeDrawingsLocation', activeDrawingsLocation);
   const container = document.getElementById('tab-drawings');
   container.innerHTML = `<div class="eyebrow">📐 Drawing Status</div>${liveBar('loading')}<div class="loading">⏳ Pulling from Drive…</div>`;
   try {
@@ -3980,6 +4064,7 @@ const LABOUR_SUBS = [
   { key:'fire',       label:'Fire',       icon:'🔥', live:true },
 ];
 async function renderLabour() {
+  localStorage.setItem('activeLabourSub', activeLabourSub);
   const container = document.getElementById('tab-labour');
   const sub = LABOUR_SUBS.find(s => s.key === activeLabourSub);
   const subnav = subnavHtml(LABOUR_SUBS, activeLabourSub, s => s.live ? '🟢 Live' : `Wave ${s.wave}`);
@@ -4442,8 +4527,28 @@ async function runHealthCheck() {
   }
 }
 
-// ─── INITIAL — restore last active tab ────────────────────
+// ─── INITIAL — restore full navigation state from last session ────────────
 const VALID_TABS = ['work','drawings','tendering','labour','purchasable','elevators'];
+const VALID_WORK_SUBS = WORK_SUBS.map(s => s.key);
+const VALID_STATUS = ['done','delay','pending'];
+// Restore work-tab state
+const _ws = localStorage.getItem('activeWorkSub');
+if (_ws && VALID_WORK_SUBS.includes(_ws)) activeWorkSub = _ws;
+const _wi = localStorage.getItem('activeWorkItem');
+if (_wi) activeWorkItem = _wi;
+const _wl = localStorage.getItem('activeWorkLocation');
+if (_wl) activeWorkLocation = _wl;
+const _wst = localStorage.getItem('activeWorkStatus');
+if (_wst && VALID_STATUS.includes(_wst)) activeWorkStatus = _wst;
+// Restore drawings state
+const _ds = localStorage.getItem('activeDrawingsStatus');
+if (_ds && VALID_STATUS.includes(_ds)) activeDrawingsStatus = _ds;
+const _dl = localStorage.getItem('activeDrawingsLocation');
+if (_dl) activeDrawingsLocation = _dl;
+// Restore labour state
+const _ls = localStorage.getItem('activeLabourSub');
+if (_ls) activeLabourSub = _ls;
+// Show the last-open tab
 const savedTab = localStorage.getItem('activeTab');
 showTab(VALID_TABS.includes(savedTab) ? savedTab : 'labour');
 </script>
