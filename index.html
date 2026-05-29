@@ -2086,6 +2086,90 @@ function parseBaffleCeiling(md, contractorTag, defaultTower) {
 // and Club Tile (Sr Innovation). All three sheets use the same layout:
 //   Vendor Name | Work | /Floor No. | Side | Civil Work | Material on site |
 //   Total in SQft | Achived in SQft | Balance in SQft | Plan/Achieve dates… | Total Completation Date
+// ─── Commercial Z1 parser ───────────────────────────────────────────────────
+// Tracks 3 key stages per shop: Door Material Rcvd At Site, Door Installation,
+// Canopy MS Work. renderStyle:'pct' tells the table to show % instead of chips.
+// Pending / blocked stages are listed in the remark column automatically.
+function parseCommercialZ1(md, contractor, defaultTower) {
+  const lines = splitTableRows(md);
+  const items = [];
+  let iLabel = -1, iDoorMat = -1, iDoorInst = -1, iCanopy = -1, inBlock = false;
+
+  for (const line of lines) {
+    const c    = parseRow(line);
+    const head = c.map(h => (h || '').trim());
+    const U    = head.map(h => h.toUpperCase());
+
+    const hasDoorMat  = U.some(h => h.includes('DOOR') && (h.includes('MATERIAL') || h.includes('RCVD') || h.includes('SITE')));
+    const hasDoorInst = U.some(h => h.includes('DOOR') && h.includes('INSTALL'));
+    const hasCanopy   = U.some(h => h.includes('CANOPY'));
+
+    if (hasDoorMat || hasDoorInst || hasCanopy) {
+      iLabel    = 0;
+      iDoorMat  = U.findIndex(h => h.includes('DOOR') && (h.includes('MATERIAL') || h.includes('RCVD') || h.includes('SITE')));
+      iDoorInst = U.findIndex(h => h.includes('DOOR') && h.includes('INSTALL'));
+      // First CANOPY column = Canopy MS Work (primary stage)
+      iCanopy   = U.findIndex(h => h.includes('CANOPY'));
+      inBlock = true;
+      continue;
+    }
+
+    if (!inBlock) continue;
+
+    const label = (c[iLabel] || '').trim();
+    if (!label || /^(area|shops?$|s\.?\s*no|homeland)/i.test(label)) continue;
+    if (!/\d/.test(label) && !/shop|stall|unit|kiosk/i.test(label)) continue;
+
+    function cellStat(val) {
+      const v = (val || '').trim().toUpperCase();
+      if (v === 'TRUE')  return 'done';
+      if (v === 'FALSE') return 'pending';
+      if (v === '' || v === 'NA') return 'na';
+      return 'delay'; // Hold Due To Civil Work, etc.
+    }
+
+    const stages = [];
+    [
+      { idx: iDoorMat,  name: 'Door Material' },
+      { idx: iDoorInst, name: 'Door Install'  },
+      { idx: iCanopy,   name: 'Canopy'        },
+    ].forEach(({ idx, name }) => {
+      if (idx < 0) return;
+      const st = cellStat(c[idx]);
+      if (st === 'na') return; // skip N/A columns for this shop
+      stages.push({ shortName: name, status: st, raw: (c[idx] || '').trim() });
+    });
+
+    if (stages.length === 0) continue;
+
+    const doneCount  = stages.filter(s => s.status === 'done').length;
+    const delayCount = stages.filter(s => s.status === 'delay').length;
+    let status;
+    if (doneCount === stages.length)           status = 'done';
+    else if (doneCount === 0 && delayCount === 0) status = 'pending';
+    else                                        status = 'delay';
+
+    // Pending/blocked stages → shown in Remarks
+    const remark = stages
+      .filter(s => s.status !== 'done')
+      .map(s => s.status === 'delay' ? `${s.shortName} (${s.raw})` : s.shortName)
+      .join(', ');
+
+    items.push({
+      contractor,
+      tower: defaultTower || 'COMM',
+      label,
+      done: doneCount, total: stages.length,
+      status, remark,
+      stageNames: stages.map(s => s.shortName),
+      states: stages.map(s => s.status === 'done' ? 'TRUE' : 'FALSE'),
+      stageBreakdown: stages,
+      renderStyle: 'pct',   // stages column shows % only
+    });
+  }
+  return items;
+}
+
 // Each summary row is one work type (Framing Work / Glass Work / Tile Work).
 // The follow-up per-floor-side detail block is skipped — too granular and date-heavy.
 function parseClubFacadeSummary(md, contractorTag, defaultTower) {
@@ -2289,6 +2373,7 @@ async function loadCategory(key) {
       '1aykrtIkLINtCD4CV7pWZYfheYC_cEJATWNFPSnzx2Ow': parseClubFacadeSummary, // Club Area Kazmi
       '18nX6RNIauxASFyTEtAU7kFo34Z1ZDeDM10npkUXAI1g': parseClubFacadeSummary, // Club Tile (Sr Innovation)
       '1qifGPbBmM95TClORqbjvcCvFM-tQdaZP-hf2ovoU0b0': parseSportsArenaWindow,
+      '1ZSl00TixbsNiduTqyE7OqQa_SWKzNkaJA_DbyqBpslE': parseCommercialZ1,     // Commercial Z1 shops
     };
     const all = await Promise.all(FACADE_FILES.map(f => {
       // Spandrel Glazing: custom multi-tab loader (Tower 1, 5, 6)
@@ -2653,27 +2738,26 @@ async function renderWork() {
     const pillText = { done:'Done', delay:'Delayed / Partial', pending:'Pending' };
     const cap = 300;
     const display = filtered.slice(0, cap);
-    // Hide the Item/Contractor column when filtered to a single item; same for Tower when filtered to one location
+    // Hide the Item/Contractor column when filtered to a single item
+    // Hide Tower column when there is only one unique tower in the current items set OR a specific location is selected
     const showLabelCol = allItemNames.length >= 2 && activeWorkItem === 'all';
-    const showTowerCol = !(allLocs.length >= 2 && activeWorkLocation !== 'all');
+    const uniqueTowersInSet = [...new Set(items.map(r => r.tower).filter(Boolean))];
+    const showTowerCol = uniqueTowersInSet.length > 1 && activeWorkLocation === 'all';
     const labelHeader = showLabelCol ? `<th>${escapeHtml(itemLabel)}</th>` : '';
     const tableHtml = filtered.length === 0
       ? `<div class="empty">No items in this status.</div>`
-      : `<table><thead><tr><th>#</th>${labelHeader}${showTowerCol?'<th>Tower</th>':''}<th>Location</th><th>Stages</th><th style="text-align:center">Status</th><th>Remark</th></tr></thead><tbody>${
+      : `<table><thead><tr><th>#</th>${labelHeader}${showTowerCol?'<th>Tower</th>':''}<th>Location</th><th>Work Completion</th><th style="text-align:center">Status</th><th>Remark</th></tr></thead><tbody>${
         display.map((r,i) => `<tr>
           <td>${i+1}</td>
           ${showLabelCol?`<td style="font-weight:600;color:#475569">${escapeHtml(r.contractor||'—')}</td>`:''}
           ${showTowerCol?`<td style="font-weight:600;color:#1e3a5f">${escapeHtml(r.tower||'—')}</td>`:''}
           <td class="loc">${escapeHtml(r.label)}</td>
-          <td>${r.stageBreakdown
-            ? `<div style="display:flex;flex-wrap:wrap;gap:3px;align-items:center">${r.stageBreakdown.map(s => {
-                const bg = s.status==='done'?'#dcfce7':s.status==='delay'?'#fee2e2':'#f1f5f9';
-                const c  = s.status==='done'?'#16a34a':s.status==='delay'?'#dc2626':'#94a3b8';
-                const ic = s.status==='done'?'✅':s.status==='delay'?'⚠️':'⬜';
-                return `<span style="font-size:10px;padding:2px 6px;border-radius:4px;background:${bg};color:${c};white-space:nowrap">${ic} ${escapeHtml(s.shortName)}</span>`;
-              }).join('')}</div>`
-            : `<div class="bar-row"><div class="bar-outer"><div class="bar-inner" style="width:${Math.round((r.done/Math.max(r.total,1))*100)}%;background:${r.done===r.total?'#22c55e':r.done===0?'#ef4444':'#f59e0b'}"></div></div><span class="bar-pct">${r.done}/${r.total}</span></div>`
-          }</td>
+          <td>${(() => {
+              const pct = Math.round((r.done / Math.max(r.total, 1)) * 100);
+              const c  = pct === 100 ? '#16a34a' : pct === 0 ? '#94a3b8' : '#b45309';
+              const bg = pct === 100 ? '#dcfce7' : pct === 0 ? '#f1f5f9' : '#fef3c7';
+              return `<span style="font-size:13px;font-weight:700;padding:2px 8px;border-radius:6px;background:${bg};color:${c}">${pct}%</span>`;
+            })()}</td>
           <td style="text-align:center"><span class="pill" style="${pillStyles[r.status]}">${pillText[r.status]}</span></td>
           <td style="color:${r.remark?'#6b7280':'#d1d5db'};font-style:${r.remark?'normal':'italic'}">${escapeHtml(r.remark||'—')}</td>
         </tr>`).join('')}</tbody></table>${filtered.length>cap?`<div style="padding:10px 12px;font-size:11px;color:#94a3b8;text-align:center">Showing first ${cap} of ${filtered.length} — use filters to narrow</div>`:''}`;
