@@ -1024,6 +1024,139 @@ async function loadSpandrelGlazing(fileId) {
   return all;
 }
 
+// ─── GRC EXECUTION ────────────────────────────────────────
+// Custom per-tower parser for the GRC sheet (6 tabs: Tower-01 … Tower-06).
+// Key columns detected dynamically: GRC Installation (various headings per tower),
+// GRC Plaster, GRC Mesh Installation, GRC Final Checking.
+// Status:  done  = GRC Final Checking TRUE
+//          delay = any GRC work done but Final not yet checked
+//          pending = nothing started
+// GIDs: T1=598820856, T2=33284386, T3=1519503501,
+//       T4=472680717, T5=1532291845, T6=1744511062
+
+function parseGRCTabCsv(csv, towerLabel) {
+  if (!csv || csv.trim().length < 30) return [];
+  // ── CSV → 2D rows (same inline parser used by Spandrel) ──
+  const rows = [];
+  let cur = [], field = '', inQ = false;
+  for (let i = 0; i <= csv.length; i++) {
+    const ch = i < csv.length ? csv[i] : '\n';
+    if (inQ) {
+      if (ch === '"' && csv[i+1] === '"') { field += '"'; i++; }
+      else if (ch === '"') inQ = false;
+      else field += ch;
+    } else {
+      if (ch === ',') { cur.push(field.trim()); field = ''; }
+      else if (ch === '\n' || ch === '\r') {
+        if (ch === '\r' && csv[i+1] === '\n') i++;
+        cur.push(field.trim()); field = '';
+        if (cur.some(f => f)) rows.push(cur);
+        cur = [];
+      } else if (ch === '"') inQ = true;
+      else field += ch;
+    }
+  }
+  if (rows.length < 2) return [];
+
+  // ── Locate header row: must contain FLOOR and GRC ───────
+  let hIdx = -1;
+  for (let i = 0; i < Math.min(rows.length, 5); i++) {
+    const h = rows[i].map(c => (c||'').toUpperCase());
+    if (h.some(c => /FLOOR/.test(c)) && h.some(c => c.includes('GRC'))) { hIdx = i; break; }
+  }
+  if (hIdx < 0) return [];
+  const H = rows[hIdx].map(c => (c||'').toUpperCase().trim());
+
+  // ── Column indices ────────────────────────────────────────
+  const iContractor = H.findIndex(h => h.includes('CONTRACT'));
+  const iMesh   = H.findIndex(h => h.includes('GRC') && h.includes('MESH'));
+  const iFinal  = H.findIndex(h => h.includes('GRC') && (h.includes('FINAL') || h.includes('CHECK')));
+  const iPlaster= H.findIndex(h => h.includes('GRC') && h.includes('PLASTER'));
+  // All remaining GRC columns = GRC Installation (standalone "GRC" or "GRC INSTALLATION" sub-headings)
+  const grcInstIdxs = H.reduce((acc, h, k) => {
+    if (!h.includes('GRC')) return acc;
+    if (k === iMesh || k === iFinal || k === iPlaster) return acc;
+    acc.push(k);
+    return acc;
+  }, []);
+
+  // ── Group rows by floor ───────────────────────────────────
+  const floorGroups = [];
+  let cur2 = null;
+  for (let i = hIdx + 1; i < rows.length; i++) {
+    const row = rows[i];
+    const c0  = (row[0]||'').trim();
+    if (/\d+\s*floor/i.test(c0)) {
+      if (cur2) floorGroups.push(cur2);
+      cur2 = { label: c0, contractor: (iContractor >= 0 ? (row[iContractor]||'').trim() : ''), rows: [row] };
+    } else if (cur2 && (!c0 || /^(front|back)$/i.test(c0))) {
+      if (!cur2.contractor && iContractor >= 0) { const v=(row[iContractor]||'').trim(); if(v) cur2.contractor=v; }
+      cur2.rows.push(row);
+    }
+  }
+  if (cur2) floorGroups.push(cur2);
+
+  // ── Build items ───────────────────────────────────────────
+  const items = [];
+  for (const g of floorGroups) {
+    const grcVals = g.rows.flatMap(r => grcInstIdxs.map(i => (r[i]||'').toUpperCase().trim())).filter(v => v);
+    const grcTrue = grcVals.filter(v => v === 'TRUE').length;
+    const grcNotes= grcVals.filter(v => v !== 'TRUE' && v !== 'FALSE');
+    const meshDone  = g.rows.some(r => iMesh   >= 0 && (r[iMesh]  ||'').toUpperCase().trim() === 'TRUE');
+    const finalDone = g.rows.some(r => iFinal  >= 0 && (r[iFinal] ||'').toUpperCase().trim() === 'TRUE');
+    const plasterDone=g.rows.some(r => iPlaster>= 0 && (r[iPlaster]||'').toUpperCase().trim() === 'TRUE');
+    const totalGRC  = grcVals.length;
+
+    let status, done, remark;
+    if (finalDone) {
+      status = 'done'; done = 1; remark = 'GRC Final ✓';
+    } else if (grcTrue > 0 || plasterDone || meshDone) {
+      status = 'delay'; done = 0;
+      const pts = [];
+      if (grcTrue > 0)  pts.push(grcTrue === totalGRC && totalGRC > 0 ? 'Install ✓' : `Install ${grcTrue}/${totalGRC}`);
+      if (plasterDone)  pts.push('Plaster ✓');
+      if (meshDone)     pts.push('Mesh ✓');
+      if (grcNotes.length) pts.push(grcNotes[0]);
+      remark = (pts.join(' · ') || '') + ' · Final pending';
+    } else if (grcNotes.length > 0) {
+      status = 'delay'; done = 0; remark = grcNotes[0];
+    } else {
+      status = 'pending'; done = 0; remark = '';
+    }
+
+    items.push({
+      contractor: g.contractor || 'GRC',
+      tower: towerLabel,
+      label: `${towerLabel} – ${g.label}`,
+      done, total: 1, status, remark,
+      stageNames: ['GRC Install', 'Plaster', 'Mesh', 'Final Check'],
+      states: [
+        totalGRC > 0 ? (grcTrue === totalGRC ? 'TRUE' : grcTrue > 0 ? `${grcTrue}/${totalGRC}` : 'FALSE') : '—',
+        plasterDone  ? 'TRUE' : 'FALSE',
+        meshDone     ? 'TRUE' : 'FALSE',
+        finalDone    ? 'TRUE' : 'FALSE',
+      ],
+    });
+  }
+  return items;
+}
+
+async function loadGRCExecution(fileId) {
+  const tabs = [
+    { gid: 598820856,  tower: 'T1' },
+    { gid: 33284386,   tower: 'T2' },
+    { gid: 1519503501, tower: 'T3' },
+    { gid: 472680717,  tower: 'T4' },
+    { gid: 1532291845, tower: 'T5' },
+    { gid: 1744511062, tower: 'T6' },
+  ];
+  const results = await Promise.all(tabs.map(async ({ gid, tower }) => {
+    try { const csv = await fetchSheetTabRaw(fileId, gid); return parseGRCTabCsv(csv, tower); }
+    catch { return []; }
+  }));
+  return results.flat();
+}
+
 // Generic MEP-sheet parser. Detects each table block, identifies stage-boolean columns,
 // and classifies each row as done/delay/pending. Tags entries with contractor + tower.
 function parseMEPSheet(md, contractorTag, defaultTower) {
@@ -1960,6 +2093,8 @@ async function loadCategory(key) {
       fetchSheet(f.fileId).then(md => parseMEPSheet(md, f.contractor, f.defaultTower)).catch(()=>[])
     ));
     parsed = all.flat();
+  } else if (key === 'grc') {
+    parsed = await loadGRCExecution('1sdYkcMQaSx4gHj-tcPkKph1FoSp9zAfLqLLwPnQor7Q');
   } else if (key === 'facade') {
     // fileId-based parser overrides for facade sheets that don't fit the generic boolean-stage parser
     const SPANDREL_ID = '1PAn4OG0Swr3GmaG5KsceR5rVLPYt8uq5wdYfcEQIUm8';
@@ -2102,6 +2237,7 @@ async function renderTendering() {
 const WORK_SUBS = [
   { key:'facade',      label:'Facade',             icon:'🏢', wave:4, live:true },
   { key:'interior',    label:'Interior',           icon:'🛋️', wave:5, live:true },
+  { key:'grc',         label:'GRC',                icon:'🏗️', wave:5, live:true },
   { key:'mechanical',  label:'Mechanical',         icon:'🌡️', wave:2, live:true },
   { key:'electrical',  label:'Electrical',         icon:'⚡',  wave:3, live:true },
   { key:'fire',        label:'Fire',               icon:'🔥', wave:3, live:true },
@@ -2174,6 +2310,7 @@ async function renderWork() {
     civilFacade:'FACADE PRE WORK FROM CIVIL sheet',
     landscape:  'LANDSCAPING sheet',
     interior:   'INTERIOR TARGET SHEET (13 contractor tabs)',
+    grc:        'GRC execution sheet (6 tower tabs: T1–T6)',
   };
   container.innerHTML = `
     <div class="eyebrow">${sub.icon} ${escapeHtml(sub.label)}</div>
