@@ -400,6 +400,7 @@ let activeWorkSub = 'waterproof';
 let activeWorkStatus = 'done';
 let activeLabourSub = 'all';
 let activeTenderStatus = 'inprogress';
+let activeTenderProject = 'all';  // Tendering: project sub-filter
 let activeWorkItem = 'all';     // Within a live work sub-tab: which Item/Contractor is selected
 let activeWorkLocation = 'all'; // Within a live work sub-tab: which Tower/Location is selected
 let activeWorkSide     = 'all'; // GRC area/side filter within Facade
@@ -628,21 +629,24 @@ function parseTendering(md) {
   const lines = splitTableRows(md);
   if (lines.length < 2) return [];
   const headers = parseRow(lines[0]);
-  const idx = (n) => headers.findIndex(h => h.toLowerCase() === n.toLowerCase());
-  const iLoc = idx('Location'), iPts = idx('Points'), iSt = idx('Status'),
-        iVen = idx('Vendor Name'), iRem = idx('Remarks');
+  const idx = (n) => headers.findIndex(h => h.toLowerCase().includes(n.toLowerCase()));
+  const iProj = idx('project'),  iLoc  = idx('location'), iPts  = idx('points'),
+        iSt   = idx('status'),   iVen  = idx('vendor'),   iAuth = idx('approval'),
+        iRem  = idx('remarks');
   return lines.slice(1).map((line, i) => {
     const c = parseRow(line);
-    const ven = (c[iVen]||'').trim(), rem = (c[iRem]||'').trim();
-    const status = (c[iSt]||'').toLowerCase().replace(/\s+/g,'');
+    const rawStatus = (c[iSt]||'').toLowerCase().replace(/\s+/g,'');
     return {
-      n: i+1,
-      location: c[iLoc] || '',
-      scope:    c[iPts] || '',
-      status:   status === 'done' ? 'done' : status === 'inprogress' ? 'inprogress' : 'pending',
-      remark:   [ven, rem].filter(Boolean).join(' · '),
+      n:         i + 1,
+      project:   (c[iProj] ||'').trim(),
+      location:  (c[iLoc]  ||'').trim(),
+      scope:     (c[iPts]  ||'').trim(),
+      authority: (c[iAuth] ||'').trim(),
+      vendor:    (c[iVen]  ||'').trim(),
+      remark:    (c[iRem]  ||'').trim(),
+      status:    rawStatus === 'done' ? 'done' : rawStatus === 'inprogress' ? 'inprogress' : 'pending',
     };
-  });
+  }).filter(r => r.scope || r.location); // drop blank rows
 }
 
 // Interior Labour: 9 trades × 10 contractors matrix + TOTAL/REQUIRED rows
@@ -2236,40 +2240,68 @@ async function renderTendering() {
         </div>`;
       return;
     }
+    // ── Project filter ─────────────────────────────────────
+    const allProjects = [...new Set(rows.map(r => r.project).filter(Boolean))].sort();
+    if (activeTenderProject !== 'all' && !allProjects.includes(activeTenderProject)) activeTenderProject = 'all';
+    const scopedRows = activeTenderProject === 'all' ? rows : rows.filter(r => r.project === activeTenderProject);
     const counts = { done:0, inprogress:0, pending:0 };
-    rows.forEach(r => counts[r.status]++);
+    scopedRows.forEach(r => counts[r.status]++);
     const tab = TENDER_TABS.find(t => t.key === activeTenderStatus);
-    const filtered = rows.filter(r => r.status === activeTenderStatus);
+    const filtered = scopedRows.filter(r => r.status === activeTenderStatus);
     const pillStyles = {
-      done: 'background:#dcfce7;color:#16a34a',
+      done:       'background:#dcfce7;color:#16a34a',
       inprogress: 'background:#dbeafe;color:#1d4ed8',
-      pending: 'background:#fef3c7;color:#b45309',
+      pending:    'background:#fef3c7;color:#b45309',
     };
     const pillText = { done:'Done', inprogress:'In Progress', pending:'Pending' };
+    // Project strip
+    const projNav = allProjects.length >= 2 ? `
+      <div style="font-size:10px;font-weight:700;color:#94a3b8;letter-spacing:1.5px;text-transform:uppercase;margin-bottom:8px;margin-top:4px">🏗️ Project</div>
+      <div class="subnav">
+        <button class="sub-btn${activeTenderProject==='all'?' active':''}" data-tender-proj="all">
+          <div class="icon">🌐</div><div class="label">All Projects</div><div class="meta">${rows.length} items</div>
+        </button>
+        ${allProjects.map(p => {
+          const cnt = rows.filter(r => r.project === p).length;
+          return `<button class="sub-btn${activeTenderProject===p?' active':''}" data-tender-proj="${escapeHtml(p)}">
+            <div class="icon">🏗️</div><div class="label">${escapeHtml(p)}</div><div class="meta">${cnt} items</div>
+          </button>`;
+        }).join('')}
+      </div>` : '';
     const tableHtml = filtered.length === 0
       ? `<div class="empty">No items in this status.</div>`
-      : `<table><thead><tr><th>#</th><th>Location</th><th>Scope</th><th style="text-align:center">Status</th><th>Remark / Vendor</th></tr></thead><tbody>${
+      : `<table><thead><tr>
+          <th>#</th><th>Project</th><th>Location</th><th>Scope</th><th>Approval Authority</th>
+          <th style="text-align:center">Status</th><th>Vendor</th><th>Remarks</th>
+        </tr></thead><tbody>${
         filtered.map((r,i) => `<tr>
           <td>${i+1}</td>
+          <td style="font-weight:600;color:#7c3aed">${escapeHtml(r.project||'—')}</td>
           <td class="loc">${escapeHtml(r.location)}</td>
           <td>${escapeHtml(r.scope)}</td>
+          <td style="color:#1e3a5f;font-weight:500">${escapeHtml(r.authority||'—')}</td>
           <td style="text-align:center"><span class="pill" style="${pillStyles[r.status]}">${pillText[r.status]}</span></td>
+          <td style="color:${r.vendor?'#0e7490':'#d1d5db'};font-style:${r.vendor?'normal':'italic'}">${escapeHtml(r.vendor||'—')}</td>
           <td style="color:${r.remark?'#6b7280':'#d1d5db'};font-style:${r.remark?'normal':'italic'}">${escapeHtml(r.remark||'—')}</td>
         </tr>`).join('')}</tbody></table>`;
     container.innerHTML = `
       <div class="eyebrow">📋 Tendering — WO Status · HLR</div>
       ${liveBar('live', rows.length, 'WO status file')}
+      ${projNav}
       ${statusCardsHtml(TENDER_TABS, counts, activeTenderStatus)}
       <div class="tbl-wrap" style="border-color:${tab.border}">
         <div class="tbl-head" style="background:${tab.bg};border-bottom:1px solid ${tab.border}">
           <span>${tab.icon}</span>
-          <span class="tbl-title" style="color:${tab.color}">Tendering · ${escapeHtml(tab.label)}</span>
+          <span class="tbl-title" style="color:${tab.color}">Tendering · ${escapeHtml(tab.label)}${activeTenderProject!=='all'?' · '+escapeHtml(activeTenderProject):''}</span>
           <span class="tbl-count" style="background:${tab.color}">${filtered.length} items</span>
         </div>
         ${tableHtml}
       </div>`;
     container.querySelectorAll('.card').forEach(b => {
       b.addEventListener('click', () => { activeTenderStatus = b.dataset.status; renderTendering(); });
+    });
+    container.querySelectorAll('[data-tender-proj]').forEach(b => {
+      b.addEventListener('click', () => { activeTenderProject = b.dataset.tenderProj; renderTendering(); });
     });
   } catch (e) {
     container.innerHTML = `<div class="eyebrow">📋 Tendering</div><div class="error"><strong>Failed to load:</strong> ${escapeHtml(e?.message || String(e))}</div>`;
@@ -2957,6 +2989,18 @@ function _kitchenStatusClass(v) {
   if (/received|done|complete|installed|commissioned/.test(u)) return 'received';
   return 'pending';
 }
+// Normalise commissioning cell text → one of the 5 granular status keys
+function _comStatusNorm(v) {
+  const u = String(v || '').trim().toLowerCase();
+  if (!u || u === '-') return 'not-received';
+  if (/commission|done|complete|installed/.test(u)) return 'commissioned';
+  if (/mep/.test(u))    return 'mep-clearance';
+  if (/size/.test(u))   return 'size-issue';
+  if (/hold/.test(u))   return 'hold';
+  if (/fitout/.test(u)) return 'fitout-item';
+  if (/not\s*rec|not\s*rcv/.test(u)) return 'not-received';
+  return 'not-received';
+}
 // Kitchen-specific extractor — bypasses the generic unwrapMcp (which assumes
 // pipe-table content and falls back to "longest string", incorrectly picking
 // the JSON wrapper over CSV content). Walks the response and returns
@@ -3047,7 +3091,7 @@ async function renderCommercialKitchenInto(host) {
       return;
     }
     function delClass(r) { return _kitchenStatusClass(r.delivery); }
-    function comClass(r) { return _kitchenStatusClass(r.commissioning); }
+    function comClass(r) { return _comStatusNorm(r.commissioning); }
     // ── Build Area (col B) and Sub-area (col C) lists ────
     const areaList = [];
     {
@@ -3083,7 +3127,7 @@ async function renderCommercialKitchenInto(host) {
       ? areaScopeRows
       : areaScopeRows.filter(r => (r.subArea || '').trim() === activeKitchenSubArea);
     const delCounts = { all: statusScope.length, received: 0, pending: 0 };
-    const comCounts = { all: statusScope.length, received: 0, pending: 0 };
+    const comCounts = { all: statusScope.length, commissioned: 0, 'mep-clearance': 0, 'size-issue': 0, hold: 0, 'fitout-item': 0, 'not-received': 0 };
     statusScope.forEach(r => { delCounts[delClass(r)]++; comCounts[comClass(r)]++; });
     function filterCardHtml(group, key, label, num, active) {
       const colors = key === 'all' ? { c:'#1e3a5f', bg:active?'#e0e7ff':'#fff', rb:'#c7d2fe' }
@@ -3126,11 +3170,33 @@ async function renderCommercialKitchenInto(host) {
       ${filterCardHtml('delivery','received','Received',delCounts.received,activeKitchenDelivery==='received')}
       ${filterCardHtml('delivery','pending','Pending',delCounts.pending,activeKitchenDelivery==='pending')}
     </div>`;
+    const COM_STATUSES = [
+      { key:'commissioned',  label:'Commissioned',  c:'#16a34a', activeBg:'#dcfce7', ring:'#86efac' },
+      { key:'mep-clearance', label:'MEP Clearance',  c:'#dc2626', activeBg:'#fee2e2', ring:'#fca5a5' },
+      { key:'size-issue',    label:'Size Issue',     c:'#c2410c', activeBg:'#ffedd5', ring:'#fdba74' },
+      { key:'hold',          label:'Hold',           c:'#7f1d1d', activeBg:'#fef2f2', ring:'#ef4444'  },
+      { key:'fitout-item',   label:'Fitout Item',    c:'#1d4ed8', activeBg:'#dbeafe', ring:'#93c5fd' },
+      { key:'not-received',  label:'Not Received',   c:'#475569', activeBg:'#f1f5f9', ring:'#cbd5e1' },
+    ];
     const comCards = `<div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:10px 0 4px 2px">⚙️ Commissioning status</div><div class="cards" style="overflow-x:auto;flex-wrap:nowrap;padding-bottom:6px">
-      ${filterCardHtml('commissioning','all','All',comCounts.all,activeKitchenCommissioning==='all')}
-      ${filterCardHtml('commissioning','received','Commissioned',comCounts.received,activeKitchenCommissioning==='received')}
-      ${filterCardHtml('commissioning','pending','Pending',comCounts.pending,activeKitchenCommissioning==='pending')}
+      ${colorCardHtml('commissioning','all','All',comCounts.all,activeKitchenCommissioning==='all',{ c:'#1e3a5f', activeBg:'#e0e7ff', ring:'#c7d2fe' })}
+      ${COM_STATUSES.map(s => colorCardHtml('commissioning', s.key, s.label, comCounts[s.key]||0, activeKitchenCommissioning===s.key, { c:s.c, activeBg:s.activeBg, ring:s.ring })).join('')}
     </div>`;
+    // Per-status pill for the commissioning column in the table
+    const COM_PILL_STYLE = {
+      'commissioned':  { bg:'#dcfce7', c:'#16a34a' },
+      'mep-clearance': { bg:'#fee2e2', c:'#dc2626' },
+      'size-issue':    { bg:'#ffedd5', c:'#c2410c' },
+      'hold':          { bg:'#7f1d1d', c:'#fff'    },
+      'fitout-item':   { bg:'#dbeafe', c:'#1d4ed8' },
+      'not-received':  { bg:'#f1f5f9', c:'#64748b' },
+    };
+    const comPill = r => {
+      const u = (r.commissioning || '').trim();
+      if (!u || u === '-') return `<span style="color:#cbd5e1">—</span>`;
+      const s = COM_PILL_STYLE[comClass(r)] || { bg:'#f1f5f9', c:'#64748b' };
+      return `<span class="pill" style="background:${s.bg};color:${s.c}">${escapeHtml(u)}</span>`;
+    };
     const pill = (text, cls) => {
       const u = (text||'').trim();
       if (!u || u === '-') return `<span style="color:#cbd5e1">—</span>`;
@@ -3160,7 +3226,7 @@ async function renderCommercialKitchenInto(host) {
             <td><span style="font-size:10px;color:#64748b">${escapeHtml(r.category||'—')}</span></td>
             <td>${escapeHtml(r.desc||'—')}</td>
             <td style="text-align:center">${pill(r.delivery, delClass(r))}</td>
-            <td style="text-align:center">${pill(r.commissioning, comClass(r))}</td>
+            <td style="text-align:center">${comPill(r)}</td>
           </tr>`).join('')}</tbody>
         </table>`;
     // ── Section cards (CB items / Haks / ID) ───────────────
