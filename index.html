@@ -549,11 +549,20 @@ function csvToPipeRows(csv) {
     .join('\n');
 }
 
+// Cache of Last-Modified header values per fileId, captured from CSV export responses.
+// The Last-Modified header is in the CORS safe-list, so it's accessible cross-origin.
+const _sheetLastModified = {};
+
 async function fetchSheetTab(fileId, gid) {
   const base = `https://docs.google.com/spreadsheets/d/${fileId}/export?format=csv`;
   const url  = gid != null ? `${base}&gid=${gid}` : base;
   const r = await fetch(url, { credentials: 'omit' });
   if (!r.ok) throw new Error(`HTTP ${r.status} fetching ${fileId}${gid != null ? ' tab ' + gid : ''} — make sure the sheet is shared "Anyone with link → Viewer".`);
+  // Capture Last-Modified from CDN response (reflects actual sheet edit time)
+  if (!_sheetLastModified[fileId]) {
+    const lm = r.headers.get('last-modified');
+    if (lm) _sheetLastModified[fileId] = lm;
+  }
   const csv = await r.text();
   return csvToPipeRows(csv);
 }
@@ -564,6 +573,10 @@ async function fetchSheetTabRaw(fileId, gid) {
   const url  = gid != null ? `${base}&gid=${gid}` : base;
   const r = await fetch(url, { credentials: 'omit' });
   if (!r.ok) throw new Error(`HTTP ${r.status} fetching ${fileId}${gid != null ? ' tab ' + gid : ''} — make sure the sheet is shared "Anyone with link → Viewer".`);
+  if (!_sheetLastModified[fileId]) {
+    const lm = r.headers.get('last-modified');
+    if (lm) _sheetLastModified[fileId] = lm;
+  }
   return await r.text();
 }
 const _sheetRawCache = {};
@@ -2570,11 +2583,11 @@ function subnavHtml(items, active, getMeta) {
   }).join('')}</div>`;
 }
 async function renderWork() {
-  // Persist nav state so browser refresh restores the same view
-  localStorage.setItem('activeWorkSub',      activeWorkSub);
-  localStorage.setItem('activeWorkItem',     activeWorkItem);
-  localStorage.setItem('activeWorkLocation', activeWorkLocation);
-  localStorage.setItem('activeWorkStatus',   activeWorkStatus);
+  // Persist nav state so browser refresh restores the same view (sessionStorage = per-tab only)
+  sessionStorage.setItem('activeWorkSub',      activeWorkSub);
+  sessionStorage.setItem('activeWorkItem',     activeWorkItem);
+  sessionStorage.setItem('activeWorkLocation', activeWorkLocation);
+  sessionStorage.setItem('activeWorkStatus',   activeWorkStatus);
   const container = document.getElementById('tab-work');
   const sub = WORK_SUBS.find(s => s.key === activeWorkSub);
   const subnav = subnavHtml(WORK_SUBS, activeWorkSub, s => s.live ? '🟢 Live' : `Wave ${s.wave}`);
@@ -3978,8 +3991,8 @@ async function renderWatconInto(host) {
 
 // ─── DRAWINGS TAB ─────────────────────────────────────────
 async function renderDrawings() {
-  localStorage.setItem('activeDrawingsStatus',  activeDrawingsStatus);
-  localStorage.setItem('activeDrawingsLocation', activeDrawingsLocation);
+  sessionStorage.setItem('activeDrawingsStatus',  activeDrawingsStatus);
+  sessionStorage.setItem('activeDrawingsLocation', activeDrawingsLocation);
   const container = document.getElementById('tab-drawings');
   container.innerHTML = `<div class="eyebrow">📐 Drawing Status</div>${liveBar('loading')}<div class="loading">⏳ Pulling from Drive…</div>`;
   try {
@@ -4064,7 +4077,7 @@ const LABOUR_SUBS = [
   { key:'fire',       label:'Fire',       icon:'🔥', live:true },
 ];
 async function renderLabour() {
-  localStorage.setItem('activeLabourSub', activeLabourSub);
+  sessionStorage.setItem('activeLabourSub', activeLabourSub);
   const container = document.getElementById('tab-labour');
   const sub = LABOUR_SUBS.find(s => s.key === activeLabourSub);
   const subnav = subnavHtml(LABOUR_SUBS, activeLabourSub, s => s.live ? '🟢 Live' : `Wave ${s.wave}`);
@@ -4156,12 +4169,18 @@ async function renderLabour() {
           </div>`).join('')}
         <div style="font-size:10px;color:#9ca3af;margin-top:6px">Fix: Open the sheet → Share → General access → <strong>Anyone with the link</strong> → Viewer → Done. Then reload.</div>
       </div>`;
-    // Kick off metadata fetches in parallel — won't block the main render
-    // since they're optional UI sugar. We render with placeholders, then
-    // patch the DOM when metadata returns.
-    const metaPromises = sourceFiles.map(s =>
-      fetchSheetMetadata(s.fileId).then(meta => ({ ...s, meta }))
-    );
+    // Format Last-Modified header value (captured during CSV fetch above)
+    const fmtLastMod = (fileId) => {
+      const lm = _sheetLastModified[fileId];
+      if (!lm) return '<span style="color:#94a3b8">—</span>';
+      try {
+        const d = new Date(lm);
+        return `<span style="color:#16a34a;font-weight:600">${d.toLocaleString('en-IN', {
+          day:'2-digit', month:'short', year:'numeric',
+          hour:'2-digit', minute:'2-digit', hour12:true
+        })}</span>`;
+      } catch { return '<span style="color:#94a3b8">—</span>'; }
+    };
     const totalPresent = rows.reduce((s,r) => s + r.present, 0);
     const totalCommitted = rows.reduce((s,r) => s + r.committed, 0);
     const shortage = Math.max(totalCommitted - totalPresent, 0);
@@ -4198,14 +4217,13 @@ async function renderLabour() {
             <td><div class="bar-row"><div class="bar-outer"><div class="bar-inner" style="width:${cappedPct}%;background:${barColor}"></div></div><span class="bar-pct" style="color:${barColor}">${pct}%</span></div></td>
           </tr>`;
         }).join('')}</tbody></table>`;
-    // Last-edited panel — placeholder rendered now, populated when metadata
-    // promises resolve. One row per data source with its modifiedTime.
+    // "Sheet last edited" panel — uses Last-Modified header captured during CSV fetch
     const lastEditPlaceholder = sourceFiles.length === 0 ? '' : `
-      <div id="labour-last-edit" style="background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:11px;color:#64748b">
+      <div style="background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:11px;color:#64748b">
         <div style="font-weight:700;font-size:10px;letter-spacing:1px;text-transform:uppercase;color:#94a3b8;margin-bottom:4px">⏱ Sheet last edited</div>
         ${sourceFiles.map(s => `<div style="display:flex;justify-content:space-between;padding:2px 0">
           <span style="color:#1e3a5f;font-weight:600">${escapeHtml(s.label)}</span>
-          <span data-meta-time="${escapeHtml(s.fileId)}" style="color:#94a3b8">Loading…</span>
+          ${fmtLastMod(s.fileId)}
         </div>`).join('')}
       </div>`;
     container.innerHTML = `
@@ -4227,18 +4245,6 @@ async function renderLabour() {
     container.querySelectorAll('.sub-btn').forEach(b => {
       b.addEventListener('click', () => { activeLabourSub = b.dataset.key; renderLabour(); });
     });
-    // Resolve metadata and patch the "Sheet last edited" rows in the DOM.
-    metaPromises.forEach(p => p.then(({ fileId, meta }) => {
-      const el = container.querySelector(`[data-meta-time="${fileId}"]`);
-      if (!el) return;
-      if (!meta || !meta.modifiedTime) { el.textContent = 'unavailable'; el.style.color = '#cbd5e1'; return; }
-      el.textContent = formatIstTime(meta.modifiedTime);
-      el.style.color = '#16a34a';
-      el.style.fontWeight = '600';
-    }).catch(() => {
-      const el = container.querySelector(`[data-meta-time="${p.fileId}"]`);
-      if (el) { el.textContent = 'unavailable'; el.style.color = '#cbd5e1'; }
-    }));
   } catch (e) {
     container.innerHTML = `<div class="eyebrow">${sub.icon} ${escapeHtml(sub.label)} Labour</div>${subnav}<div class="error"><strong>Failed to load:</strong> ${escapeHtml(e?.message || String(e))}</div>`;
     container.querySelectorAll('.sub-btn').forEach(b => {
@@ -4449,7 +4455,7 @@ async function renderElevators() {
 }
 function showTab(key) {
   activeTab = key;
-  localStorage.setItem('activeTab', key);
+  sessionStorage.setItem('activeTab', key);
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === key));
   ['work','drawings','tendering','labour','purchasable','elevators'].forEach(k => {
     const el = document.getElementById('tab-' + k);
@@ -4527,29 +4533,27 @@ async function runHealthCheck() {
   }
 }
 
-// ─── INITIAL — restore full navigation state from last session ────────────
-const VALID_TABS = ['work','drawings','tendering','labour','purchasable','elevators'];
+// ─── INITIAL — restore navigation state ─────────────────────────────────────
+// sessionStorage: survives F5/refresh within the same tab, but NOT new-tab or
+// fresh URL opens — those always land on the default tab (Labour Report).
+const VALID_TABS      = ['work','drawings','tendering','labour','purchasable','elevators'];
 const VALID_WORK_SUBS = WORK_SUBS.map(s => s.key);
-const VALID_STATUS = ['done','delay','pending'];
-// Restore work-tab state
-const _ws = localStorage.getItem('activeWorkSub');
-if (_ws && VALID_WORK_SUBS.includes(_ws)) activeWorkSub = _ws;
-const _wi = localStorage.getItem('activeWorkItem');
-if (_wi) activeWorkItem = _wi;
-const _wl = localStorage.getItem('activeWorkLocation');
-if (_wl) activeWorkLocation = _wl;
-const _wst = localStorage.getItem('activeWorkStatus');
-if (_wst && VALID_STATUS.includes(_wst)) activeWorkStatus = _wst;
-// Restore drawings state
-const _ds = localStorage.getItem('activeDrawingsStatus');
-if (_ds && VALID_STATUS.includes(_ds)) activeDrawingsStatus = _ds;
-const _dl = localStorage.getItem('activeDrawingsLocation');
-if (_dl) activeDrawingsLocation = _dl;
-// Restore labour state
-const _ls = localStorage.getItem('activeLabourSub');
-if (_ls) activeLabourSub = _ls;
-// Show the last-open tab
-const savedTab = localStorage.getItem('activeTab');
+const VALID_STATUS    = ['done','delay','pending'];
+const _ws  = sessionStorage.getItem('activeWorkSub');
+if (_ws  && VALID_WORK_SUBS.includes(_ws))  activeWorkSub      = _ws;
+const _wi  = sessionStorage.getItem('activeWorkItem');
+if (_wi)                                     activeWorkItem     = _wi;
+const _wl  = sessionStorage.getItem('activeWorkLocation');
+if (_wl)                                     activeWorkLocation = _wl;
+const _wst = sessionStorage.getItem('activeWorkStatus');
+if (_wst && VALID_STATUS.includes(_wst))     activeWorkStatus   = _wst;
+const _ds  = sessionStorage.getItem('activeDrawingsStatus');
+if (_ds  && VALID_STATUS.includes(_ds))      activeDrawingsStatus  = _ds;
+const _dl  = sessionStorage.getItem('activeDrawingsLocation');
+if (_dl)                                     activeDrawingsLocation = _dl;
+const _ls  = sessionStorage.getItem('activeLabourSub');
+if (_ls)                                     activeLabourSub = _ls;
+const savedTab = sessionStorage.getItem('activeTab');
 showTab(VALID_TABS.includes(savedTab) ? savedTab : 'labour');
 </script>
 </body>
