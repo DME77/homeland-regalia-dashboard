@@ -1074,27 +1074,52 @@ function parseGRCTabCsv(csv, towerLabel) {
   const iFinal   = H.findIndex(h => h.includes('GRC') && (h.includes('FINAL') || h.includes('CHECK')));
   const iPlaster = H.findIndex(h => h.includes('GRC') && h.includes('PLASTER'));
 
-  // Sub-header row above the main header (used by T6 which has standalone "GRC" column names)
-  const subHeaderRow = hIdx > 0 ? rows[hIdx - 1].map(c => (c||'').trim()) : [];
+  // Sub-header row: area names can sit ABOVE the header (some towers) or BELOW it (T6).
+  // Detect T6 pattern: row after header has meaningful text in GRC columns (not TRUE/FALSE/floor).
+  const rowAbove = hIdx > 0 ? rows[hIdx - 1].map(c => (c||'').trim()) : [];
+  const rowBelow = hIdx + 1 < rows.length ? rows[hIdx + 1].map(c => (c||'').trim()) : [];
+  const belowHasAreas = rowBelow.some((v, k) =>
+    H[k] && H[k].includes('GRC') && v && v.length > 3 &&
+    !/^(TRUE|FALSE)$/i.test(v) && !/\d+\s*(ST|ND|RD|TH)?\s*FLOOR/i.test(v)
+  );
+  const subHeaderRow = belowHasAreas ? rowBelow : rowAbove;
+  // When area names row is below the header, skip it when iterating floor data
+  const dataStartIdx = belowHasAreas ? hIdx + 2 : hIdx + 1;
 
-  // Helper: derive a human-readable side/area name from header text + optional sub-header fallback
+  // Helper: clean a raw cell string into a display-friendly area name
+  function cleanAreaName(raw) {
+    return raw
+      .replace(/([a-z])([A-Z])/g, '$1 $2')  // split camelCase (e.g. KothiSideStaircase)
+      .replace(/[\-\/]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  // Helper: derive a human-readable side/area name from header text + sub-header fallback
   function extractSide(headerText, colIdx, fallbackIdx) {
+    // 1. Try to pull area name from the column header itself (T1-T5 pattern)
+    //    e.g. "GRC INSTALLATION - OVAL CAFE SIDE SHAFT" → "Oval Cafe Side Shaft"
     let s = headerText
       .replace(/GRC\s*INSTALLATION/g, '')
       .replace(/^GRC\s*/g, '')
       .replace(/[\-\/]+/g, ' ')
       .replace(/\s+/g, ' ')
       .trim();
-    // Title-case (preserves parentheses, keeps digits as-is)
-    s = s.replace(/\w+/g, w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase());
-    if (!s && subHeaderRow[colIdx]) {
-      // T6 pattern: area name lives in the row above the header row
-      s = subHeaderRow[colIdx]
-        .replace(/[\-\/]+/g, ' ')
-        .replace(/\s+/g, ' ')
-        .trim()
-        .replace(/\w+/g, w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase());
+    if (s) s = s.replace(/\w+/g, w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase());
+
+    // 2. If header gave nothing (standalone "GRC"), scan the sub-header row leftward from colIdx.
+    //    T6 uses merged cells so the area name sits in the LEFTMOST cell of the merge;
+    //    the actual GRC checkbox column is often one or more cells to the right (empty in sub-header).
+    if (!s && subHeaderRow.length > 0) {
+      for (let j = colIdx; j >= 0; j--) {
+        const v = (subHeaderRow[j] || '').trim();
+        if (v.length > 2 && !/^(AREA\s*NAMES?|S\.?\s*NO\.?|FLOOR|CONTRACT|TOWER|HOMELAND)/i.test(v)) {
+          s = cleanAreaName(v);
+          break;
+        }
+      }
     }
+
     if (!s) s = `Area ${fallbackIdx + 1}`;
     return s;
   }
@@ -1113,7 +1138,7 @@ function parseGRCTabCsv(csv, towerLabel) {
   // ── Group rows by floor ─────────────────────────────────────
   const floorGroups = [];
   let cur2 = null;
-  for (let i = hIdx + 1; i < rows.length; i++) {
+  for (let i = dataStartIdx; i < rows.length; i++) {
     const row = rows[i];
     const c0  = (row[0]||'').trim();
     if (/\d+\s*floor/i.test(c0)) {
@@ -2383,8 +2408,8 @@ async function renderWork() {
         breadcrumb += ` · ${escapeHtml(activeWorkLocation)}`;
       }
     }
-    // Side / Area filter — present when items carry a `side` property (GRC data)
-    const allSides = [...new Set(items.map(r => r.side).filter(Boolean))].sort();
+    // Side / Area filter — only visible when GRC item is selected
+    const allSides = activeWorkItem === 'GRC' ? [...new Set(items.map(r => r.side).filter(Boolean))].sort() : [];
     if (allSides.length >= 2) {
       const sideCounts = allSides.reduce((a, s) => { a[s] = items.filter(r => r.side === s).length; return a; }, {});
       sideNav = `<div style="font-size:10px;font-weight:700;color:#94a3b8;letter-spacing:1.5px;text-transform:uppercase;margin-bottom:8px;margin-top:14px">🔲 Side / Area</div>
