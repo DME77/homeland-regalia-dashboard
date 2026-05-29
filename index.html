@@ -1362,7 +1362,12 @@ function parseInteriorExecution(md, contractorTag, defaultTower) {
       return 'Worth Soul · T3 F17-F18';
     }
     if (tower === 'T4') return 'T2B · T4';
-    if (tower === 'T5') return (flat % 10 === 2) ? 'Inexplus · T5 (Side 2)' : 'Deswal · T5';
+    if (tower === 'T5') {
+      if (floor === 1)  return 'Inexplus · T5';                                // T05/11 only → INEXPLUS
+      if (floor <= 12)  return (flat % 10 === 2) ? 'Inexplus · T5' : 'Deswal · T5'; // floors 2-12: unit splits
+      if (floor <= 18)  return 'Deswal · T5';                                  // floors 13-18 → DESWAL (both units)
+      return 'Inexplus · T5';                                                   // floors 19+ → INEXPLUS (both units)
+    }
     if (tower === 'T6') {
       if (floor <= 3)  return 'SHZ · T6 F2-F3';
       if (floor <= 10) return 'Systile/Prajapati · T6 F4-F10';
