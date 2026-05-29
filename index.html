@@ -403,7 +403,8 @@ let activeTenderStatus = 'inprogress';
 let activeTenderProject = 'all';  // Tendering: project sub-filter
 let activeWorkItem = 'all';     // Within a live work sub-tab: which Item/Contractor is selected
 let activeWorkLocation = 'all'; // Within a live work sub-tab: which Tower/Location is selected
-let activeWorkSide     = 'all'; // GRC area/side filter within Facade
+let activeWorkSide      = 'all'; // GRC area/side filter within Facade
+let activeGlassStage    = 'all'; // Glass Railing stage sub-filter: all | granite-done | channel-done | railing-done
 let activeDrawingsStatus = 'pending'; // Drawings tab default status filter
 let activeDrawingsLocation = 'all';   // Drawings tab Location filter
 let activeHoiSection = 'flats';       // HOI category: 'flats' or 'items'
@@ -1200,6 +1201,136 @@ async function loadGRCExecution(fileId) {
   ];
   const results = await Promise.all(tabs.map(async ({ gid, tower }) => {
     try { const csv = await fetchSheetTabRaw(fileId, gid); return parseGRCTabCsv(csv, tower); }
+    catch { return []; }
+  }));
+  return results.flat();
+}
+
+// ─── Glass Railing parser ───────────────────────────────────────────────────
+// Dedicated per-tower loader (mirrors loadGRCExecution) so each tower tab is
+// fetched with an explicit GID and tagged directly — no flat-label inference needed.
+// Tracks 3 key stages per flat: Granite Fixing (both sides), Channel, Railing/Glass installation.
+function parseGlassRailingTab(csv, towerLabel) {
+  // Parse raw CSV into row arrays
+  const rows = [];
+  let row = [], field = '', inQ = false;
+  for (let i = 0; i <= csv.length; i++) {
+    const ch = i < csv.length ? csv[i] : '\n';
+    if (inQ) {
+      if (ch === '"' && csv[i + 1] === '"') { field += '"'; i++; }
+      else if (ch === '"') inQ = false;
+      else field += ch;
+    } else {
+      if (ch === '"') inQ = true;
+      else if (ch === ',') { row.push(field.trim()); field = ''; }
+      else if (ch === '\n' || ch === '\r') {
+        if (ch === '\r' && csv[i + 1] === '\n') i++;
+        row.push(field.trim());
+        if (row.some(c => c)) rows.push(row);
+        row = []; field = '';
+      } else field += ch;
+    }
+  }
+  if (field || row.length) { row.push(field.trim()); if (row.some(c => c)) rows.push(row); }
+  if (rows.length < 2) return [];
+
+  // Find header row (must have both FLOOR and FLAT)
+  let hIdx = -1;
+  for (let i = 0; i < Math.min(rows.length, 6); i++) {
+    const u = rows[i].map(c => (c || '').toUpperCase());
+    if (u.some(h => h.includes('FLOOR')) && u.some(h => h.includes('FLAT'))) { hIdx = i; break; }
+  }
+  if (hIdx < 0) return [];
+
+  const H = rows[hIdx].map(c => (c || '').toUpperCase().trim());
+  const iFloor = H.findIndex(h => h.includes('FLOOR'));
+  const iFlat  = H.findIndex(h => h.includes('FLAT') && !h.includes('FLOOR'));
+
+  // Collect column indices for the 3 key stage groups
+  const graniteIdxs = H.reduce((a, h, k) => { if (h.includes('GRANITE')) a.push(k); return a; }, []);
+  const iChannel    = H.findIndex(h => h.includes('CHANNEL'));
+  // Railing/Glass installation — avoid picking up "Railing sizes to vendor"
+  const iRailing    = H.findIndex(h => (h.includes('RAILING') || h.includes('GLASS')) && h.includes('INSTALL'));
+  const iHOD        = H.findIndex(h => h === 'HOD');
+
+  function cellStat(val) {
+    const v = (val || '').trim().toUpperCase();
+    if (v === 'TRUE')  return 'done';
+    if (v === '' || v === 'FALSE') return 'pending';
+    return 'delay'; // broken, Repair, HOLD, rectification, pending, etc.
+  }
+  function graniteShortName(h) {
+    if (h.includes('FRONT') || h.includes('OVAL CAFE')) return 'Granite (Front/Oval)';
+    if (h.includes('REAR')  || h.includes('KOTHI') || h.includes('B.R') || h.includes('RAMP')) return 'Granite (Rear/Kothi)';
+    return 'Granite';
+  }
+
+  const items = [];
+  let curFloor = '', curFlat = '';
+
+  for (let i = hIdx + 1; i < rows.length; i++) {
+    const row = rows[i];
+    if (!row.some(c => c)) continue;
+    const f0 = (row[iFloor] || '').trim();
+    const f1 = (row[iFlat]  || '').trim();
+    if (f0) curFloor = f0;
+    if (f1) curFlat  = f1;
+    if (!curFlat) continue;
+    // Skip aggregate/summary rows that have no proper flat label
+    if (!/\d/.test(curFlat)) continue;
+
+    // Build named stage breakdown
+    const breakdown = [];
+    graniteIdxs.forEach(k => {
+      breakdown.push({
+        shortName: graniteShortName(H[k]),
+        status: cellStat(row[k]),
+        raw: (row[k] || '').trim(),
+      });
+    });
+    if (iChannel >= 0) {
+      breakdown.push({ shortName: 'Channel', status: cellStat(row[iChannel]), raw: (row[iChannel] || '').trim() });
+    }
+    if (iRailing >= 0) {
+      breakdown.push({ shortName: 'Railing/Glass', status: cellStat(row[iRailing]), raw: (row[iRailing] || '').trim() });
+    }
+    // HOD intentionally excluded from reports
+    if (breakdown.length === 0) continue;
+
+    const doneCount  = breakdown.filter(s => s.status === 'done').length;
+    const delayCount = breakdown.filter(s => s.status === 'delay').length;
+    let status;
+    if (doneCount === breakdown.length)              status = 'done';
+    else if (doneCount === 0 && delayCount === 0)    status = 'pending';
+    else                                              status = 'delay';
+
+    const remark = breakdown.filter(s => s.status === 'delay').map(s => `${s.shortName}: ${s.raw}`).join('; ');
+
+    items.push({
+      contractor: 'Glass Railing',
+      tower: towerLabel,
+      label: `Fl ${curFloor} · ${curFlat}`,
+      done: doneCount, total: breakdown.length,
+      status, remark,
+      stageNames: breakdown.map(s => s.shortName),
+      states: breakdown.map(s => s.status === 'done' ? 'TRUE' : s.status === 'delay' ? s.raw : 'FALSE'),
+      stageBreakdown: breakdown,
+    });
+  }
+  return items;
+}
+
+async function loadGlassRailingExecution(fileId) {
+  const tabs = [
+    { gid: 1555245672, tower: 'T1' },
+    { gid: 2064988852, tower: 'T2' },
+    { gid: 0,          tower: 'T3' },
+    { gid: 1071972845, tower: 'T4' },
+    { gid: 1398858090, tower: 'T5' },
+    { gid: 451912310,  tower: 'T6' },
+  ];
+  const results = await Promise.all(tabs.map(async ({ gid, tower }) => {
+    try { return parseGlassRailingTab(await fetchSheetTabRaw(fileId, gid), tower); }
     catch { return []; }
   }));
   return results.flat();
@@ -2148,8 +2279,9 @@ async function loadCategory(key) {
     parsed = all.flat();
   } else if (key === 'facade') {
     // fileId-based parser overrides for facade sheets that don't fit the generic boolean-stage parser
-    const SPANDREL_ID = '1PAn4OG0Swr3GmaG5KsceR5rVLPYt8uq5wdYfcEQIUm8';
-    const GRC_ID     = '1sdYkcMQaSx4gHj-tcPkKph1FoSp9zAfLqLLwPnQor7Q';
+    const SPANDREL_ID      = '1PAn4OG0Swr3GmaG5KsceR5rVLPYt8uq5wdYfcEQIUm8';
+    const GRC_ID           = '1sdYkcMQaSx4gHj-tcPkKph1FoSp9zAfLqLLwPnQor7Q';
+    const GLASS_RAILING_ID = '1-CuQg-27_d36PsSRs5PMkBlVm6qdPXDNSS3P1nAmoPc';
     const FACADE_OVERRIDES = {
       '1xKCbALNOZb9gOE2turvdtVuyOqD5AXqVsc1UhuNdW1Y': parseKrishnaFacade,
       '1Fis0XdnyzqlvxUOCgK6is1hER5flR2cCfp9Jeqs7Ygw': parseBaffleCeiling,
@@ -2165,6 +2297,8 @@ async function loadCategory(key) {
       if (f.fileId === GRC_ID) return loadGRCExecution(GRC_ID)
         .then(items => items.map(it => ({ ...it, contractor: 'GRC' })))
         .catch(()=>[]);
+      // Glass Railing: dedicated per-tower loader with named stage breakdown
+      if (f.fileId === GLASS_RAILING_ID) return loadGlassRailingExecution(GLASS_RAILING_ID).catch(()=>[]);
       return fetchSheet(f.fileId).then(md => {
         const overrideParser = FACADE_OVERRIDES[f.fileId];
         return overrideParser
@@ -2439,14 +2573,16 @@ async function renderWork() {
     const allLocs = [...new Set(items.map(r => r.tower))].filter(Boolean).sort();
     if (allLocs.length >= 2 && (allItemNames.length < 2 || activeWorkItem !== 'all')) {
       const locCounts = allLocs.reduce((a, l) => { a[l] = items.filter(r => r.tower === l).length; return a; }, {});
+      const locDone   = allLocs.reduce((a, l) => { a[l] = items.filter(r => r.tower === l && r.status === 'done').length; return a; }, {});
+      const totalDone = items.filter(r => r.status === 'done').length;
       const locIcon = (l) => l==='COMM'?'🏛️':l==='BSMT'?'🅿️':l==='OTHER'?'❔':l.startsWith('T')?'🏢':'📍';
       locationNav = `<div style="font-size:10px;font-weight:700;color:#94a3b8;letter-spacing:1.5px;text-transform:uppercase;margin-bottom:8px;margin-top:14px">📍 Location</div>
         <div class="subnav">
           <button class="sub-btn${activeWorkLocation==='all'?' active':''}" data-work-loc="all">
-            <div class="icon">🌐</div><div class="label">All</div><div class="meta">${items.length} rows</div>
+            <div class="icon">🌐</div><div class="label">All</div><div class="meta">${totalDone}/${items.length} done</div>
           </button>
           ${allLocs.map(l => `<button class="sub-btn${activeWorkLocation===l?' active':''}" data-work-loc="${escapeHtml(l)}">
-            <div class="icon">${locIcon(l)}</div><div class="label">${escapeHtml(l)}</div><div class="meta">${locCounts[l]||0} rows</div>
+            <div class="icon">${locIcon(l)}</div><div class="label">${escapeHtml(l)}</div><div class="meta">${locDone[l]||0}/${locCounts[l]||0} done</div>
           </button>`).join('')}
         </div>`;
       if (activeWorkLocation !== 'all') {
@@ -2472,6 +2608,43 @@ async function renderWork() {
         breadcrumb += ` · ${escapeHtml(activeWorkSide)}`;
       }
     }
+    // ── Glass Railing stage sub-filter (Granite Done → Channel → Railing/Glass) ──
+    // Must run before counts/filtered so status cards reflect the stage-filtered set.
+    let glassStageNav = '';
+    if (activeWorkItem === 'Glass Railing' && items.some(r => r.stageBreakdown)) {
+      const GRANITE_NAMES = ['Granite (Front/Oval)', 'Granite (Rear/Kothi)'];
+      const grAny  = r => r.stageBreakdown && GRANITE_NAMES.some(n => r.stageBreakdown.find(s => s.shortName === n));
+      const grDone = r => r.stageBreakdown && GRANITE_NAMES.filter(n => r.stageBreakdown.find(s => s.shortName === n)).every(n => (r.stageBreakdown.find(s => s.shortName === n)||{}).status === 'done');
+      const stDone = (r, name) => { const s = r.stageBreakdown && r.stageBreakdown.find(s => s.shortName === name); return s && s.status === 'done'; };
+      const cntAll     = items.length;
+      const cntGranite = items.filter(r => grAny(r) && grDone(r)).length;
+      const cntChannel = items.filter(r => stDone(r, 'Channel')).length;
+      const cntRailing = items.filter(r => stDone(r, 'Railing/Glass')).length;
+      const gsBtn = (key, icon, label, count) => {
+        const isA = activeGlassStage === key;
+        return `<button class="sub-btn${isA?' active':''}" data-glass-stage="${key}">
+          <div class="icon">${icon}</div><div class="label">${label}</div><div class="meta">${count} flats</div>
+        </button>`;
+      };
+      glassStageNav = `<div style="font-size:10px;font-weight:700;color:#94a3b8;letter-spacing:1.5px;text-transform:uppercase;margin-bottom:8px;margin-top:14px">🔩 Stage Filter</div>
+        <div class="subnav">
+          ${gsBtn('all',          '🌐', 'All Flats',          cntAll)}
+          ${gsBtn('granite-done', '🪨', 'Granite Done',       cntGranite)}
+          ${gsBtn('channel-done', '📦', 'Channel Done',       cntChannel)}
+          ${gsBtn('railing-done', '🪟', 'Railing/Glass Done', cntRailing)}
+        </div>`;
+      if (activeGlassStage === 'granite-done') {
+        items = items.filter(r => grAny(r) && grDone(r));
+        breadcrumb += ' · Granite Done';
+      } else if (activeGlassStage === 'channel-done') {
+        items = items.filter(r => stDone(r, 'Channel'));
+        breadcrumb += ' · Channel Done';
+      } else if (activeGlassStage === 'railing-done') {
+        items = items.filter(r => stDone(r, 'Railing/Glass'));
+        breadcrumb += ' · Railing/Glass Done';
+      }
+    }
+    // counts and filtered are computed AFTER all filters (including glass stage)
     const counts = { done:0, delay:0, pending:0 };
     items.forEach(it => counts[it.status]++);
     const tab = STATUS_TABS.find(t => t.key === activeWorkStatus);
@@ -2492,7 +2665,15 @@ async function renderWork() {
           ${showLabelCol?`<td style="font-weight:600;color:#475569">${escapeHtml(r.contractor||'—')}</td>`:''}
           ${showTowerCol?`<td style="font-weight:600;color:#1e3a5f">${escapeHtml(r.tower||'—')}</td>`:''}
           <td class="loc">${escapeHtml(r.label)}</td>
-          <td><div class="bar-row"><div class="bar-outer"><div class="bar-inner" style="width:${Math.round((r.done/Math.max(r.total,1))*100)}%;background:${r.done===r.total?'#22c55e':r.done===0?'#ef4444':'#f59e0b'}"></div></div><span class="bar-pct">${r.done}/${r.total}</span></div></td>
+          <td>${r.stageBreakdown
+            ? `<div style="display:flex;flex-wrap:wrap;gap:3px;align-items:center">${r.stageBreakdown.map(s => {
+                const bg = s.status==='done'?'#dcfce7':s.status==='delay'?'#fee2e2':'#f1f5f9';
+                const c  = s.status==='done'?'#16a34a':s.status==='delay'?'#dc2626':'#94a3b8';
+                const ic = s.status==='done'?'✅':s.status==='delay'?'⚠️':'⬜';
+                return `<span style="font-size:10px;padding:2px 6px;border-radius:4px;background:${bg};color:${c};white-space:nowrap">${ic} ${escapeHtml(s.shortName)}</span>`;
+              }).join('')}</div>`
+            : `<div class="bar-row"><div class="bar-outer"><div class="bar-inner" style="width:${Math.round((r.done/Math.max(r.total,1))*100)}%;background:${r.done===r.total?'#22c55e':r.done===0?'#ef4444':'#f59e0b'}"></div></div><span class="bar-pct">${r.done}/${r.total}</span></div>`
+          }</td>
           <td style="text-align:center"><span class="pill" style="${pillStyles[r.status]}">${pillText[r.status]}</span></td>
           <td style="color:${r.remark?'#6b7280':'#d1d5db'};font-style:${r.remark?'normal':'italic'}">${escapeHtml(r.remark||'—')}</td>
         </tr>`).join('')}</tbody></table>${filtered.length>cap?`<div style="padding:10px 12px;font-size:11px;color:#94a3b8;text-align:center">Showing first ${cap} of ${filtered.length} — use filters to narrow</div>`:''}`;
@@ -2503,6 +2684,7 @@ async function renderWork() {
       ${itemNav}
       ${locationNav}
       ${sideNav}
+      ${glassStageNav}
       ${statusCardsHtml(STATUS_TABS, counts, activeWorkStatus)}
       <div class="tbl-wrap" style="border-color:${tab.border}">
         <div class="tbl-head" style="background:${tab.bg};border-bottom:1px solid ${tab.border}">
@@ -2526,14 +2708,18 @@ async function renderWork() {
         activeWorkItem = b.dataset.workItem;
         activeWorkLocation = 'all'; // reset location when item changes
         activeWorkSide = 'all';
+        activeGlassStage = 'all';
         renderWork();
       });
     });
     container.querySelectorAll('[data-work-loc]').forEach(b => {
-      b.addEventListener('click', () => { activeWorkLocation = b.dataset.workLoc; activeWorkSide = 'all'; renderWork(); });
+      b.addEventListener('click', () => { activeWorkLocation = b.dataset.workLoc; activeWorkSide = 'all'; activeGlassStage = 'all'; renderWork(); });
     });
     container.querySelectorAll('[data-work-side]').forEach(b => {
       b.addEventListener('click', () => { activeWorkSide = b.dataset.workSide; renderWork(); });
+    });
+    container.querySelectorAll('[data-glass-stage]').forEach(b => {
+      b.addEventListener('click', () => { activeGlassStage = b.dataset.glassStage; renderWork(); });
     });
     container.querySelectorAll('.card').forEach(b => {
       b.addEventListener('click', () => { activeWorkStatus = b.dataset.status; renderWork(); });
