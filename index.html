@@ -3073,9 +3073,8 @@ async function renderWork() {
     const showTowerCol = uniqueTowersInSet.length > 1 && activeWorkLocation === 'all';
     const showWorkTypeCol = isSqftMode && [...new Set(display.map(r => r.workType))].length > 1;
 
-    // ── Per-stage % summary for chip-mode items (e.g. FHC Lacquered Door) ──
-    // Shows when item is selected, has stageBreakdown, and is NOT sqft mode.
-    const chipItems = isSqftMode ? [] : items.filter(r => r.stageBreakdown);
+    // ── Per-stage % summary — only when a specific item is selected (not All Items) ──
+    const chipItems = (isSqftMode || activeWorkItem === 'all') ? [] : items.filter(r => r.stageBreakdown);
     let stagePctSummaryHtml = '';
     if (chipItems.length > 0) {
       const stageNames = [];
