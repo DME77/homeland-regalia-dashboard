@@ -361,7 +361,7 @@ const FACADE_FILES = [
   { contractor:'Staircase Window',      scope:'T1-T6 per flat',         defaultTower:'', fileId:'1GHciGhT70zqgK-nU8weadmbsjfzKQtw2_jsmHNM7rBs' },
   { contractor:'Main Windows',          scope:'T1-T3 per flat',         defaultTower:'', fileId:'1PwFjHkqEko4NT1nyUxp9RP7nnOq3ZvhNKu65EVDkcCI' },
   { contractor:'Louver Door',           scope:'T1-T6 per flat',         defaultTower:'', fileId:'1iRSXhmmFZlJK16VKR1zT7qmQG7VU6JuHksb1LSVPaPU' },
-  { contractor:'Staircase Railing',     scope:'T1-T5',                  defaultTower:'', fileId:'1sjogxhrfICSqmfpTBHLr56Dk58WAsu1oCSrh9Ag-pGo' },
+  { contractor:'Staircase Railing',     scope:'T1-T6',                  defaultTower:'', fileId:'1sjogxhrfICSqmfpTBHLr56Dk58WAsu1oCSrh9Ag-pGo' },
   { contractor:'FHC Lacquered Door',    scope:'All towers',             defaultTower:'', fileId:'1TgATZVcqM9MXGWBwjbvLDcStQDkOFA6LdfGEuVNq-Yw' },
   { contractor:'Putty & Paint',         scope:'T1, T2',                 defaultTower:'', fileId:'1r1C5Bgd0TPpp1F9niX5qRs5ojIKxsQcpfFab4ji7Nwo' },
   { contractor:'GRC',                   scope:'T1-T6',                  defaultTower:'', fileId:'1sdYkcMQaSx4gHj-tcPkKph1FoSp9zAfLqLLwPnQor7Q' },
@@ -515,6 +515,15 @@ const SHEET_TABS = {
     { gid: 1071972845, name: 'Tower 4' },
     { gid: 1398858090, name: 'Tower 5' },
     { gid: 451912310,  name: 'Tower 6' },
+  ],
+  // Staircase Railing — all 6 tower tabs
+  '1sjogxhrfICSqmfpTBHLr56Dk58WAsu1oCSrh9Ag-pGo': [
+    { gid: 0,          name: 'Tower 1' },
+    { gid: 1940149409, name: 'Tower 2' },
+    { gid: 645251445,  name: 'Tower 3' },
+    { gid: 1211789135, name: 'Tower 4' },
+    { gid: 553356579,  name: 'Tower 5' },
+    { gid: 999718682,  name: 'Tower 6' },
   ],
 };
 
@@ -1311,6 +1320,17 @@ function parseGlassRailingTab(csv, towerLabel) {
     // HOD intentionally excluded from reports
     if (breakdown.length === 0) continue;
 
+    // Railing-delayed rule: if all prerequisite stages (granite + channel) are done
+    // but the railing/glass install is still blank/pending → promote it to 'delay'
+    // (railing is overdue since the groundwork is complete)
+    const railingEntry  = breakdown.find(s => s.shortName === 'Railing/Glass');
+    const prereqEntries = breakdown.filter(s => s.shortName !== 'Railing/Glass');
+    if (railingEntry && railingEntry.status === 'pending' &&
+        prereqEntries.length > 0 && prereqEntries.every(s => s.status === 'done')) {
+      railingEntry.status = 'delay';
+      railingEntry.raw    = 'Railing pending (granite & plaster done)';
+    }
+
     const doneCount  = breakdown.filter(s => s.status === 'done').length;
     const delayCount = breakdown.filter(s => s.status === 'delay').length;
     let status;
@@ -1336,12 +1356,12 @@ function parseGlassRailingTab(csv, towerLabel) {
 
 async function loadGlassRailingExecution(fileId) {
   const tabs = [
-    { gid: 1555245672, tower: 'T1' },
-    { gid: 2064988852, tower: 'T2' },
-    { gid: 0,          tower: 'T3' },
-    { gid: 1071972845, tower: 'T4' },
-    { gid: 1398858090, tower: 'T5' },
-    { gid: 451912310,  tower: 'T6' },
+    { gid: 0,          tower: 'T1' },
+    { gid: 1940149409, tower: 'T2' },
+    { gid: 645251445,  tower: 'T3' },
+    { gid: 1211789135, tower: 'T4' },
+    { gid: 553356579,  tower: 'T5' },
+    { gid: 1999718682, tower: 'T6' },
   ];
   const results = await Promise.all(tabs.map(async ({ gid, tower }) => {
     try { return parseGlassRailingTab(await fetchSheetTabRaw(fileId, gid), tower); }
@@ -1863,6 +1883,139 @@ async function loadLouverDoor(fileId) {
   ];
   const results = await Promise.all(tabs.map(async ({ gid, tower }) => {
     try { return parseLouverDoorTab(await fetchSheetTabRaw(fileId, gid), tower); }
+    catch { return []; }
+  }));
+  return results.flat();
+}
+
+// ─── Staircase Railing — per-tower parser (T1–T6) ───────────────────────────
+// Tracks 2 key stages per floor (RHS + LHS grouped):
+//   1. Granite Fixing   (col: GRANITE FOR STAIRCASE RAILING)
+//   2. MS Railing Instal. (col: MS railing installation)
+// Uses _stageCellStat for date-awareness (past date → delay, future → pending).
+// If Granite is done but MS Railing is still pending → promote to delay.
+function parseStaircaseRailingTab(csv, towerLabel) {
+  // ── CSV → 2D rows ────────────────────────────────────────────────────────
+  const rows = [];
+  let row = [], field = '', inQ = false;
+  for (let i = 0; i <= csv.length; i++) {
+    const ch = i < csv.length ? csv[i] : '\n';
+    if (inQ) {
+      if (ch === '"' && csv[i+1] === '"') { field += '"'; i++; }
+      else if (ch === '"') inQ = false;
+      else field += ch;
+    } else {
+      if (ch === '"') inQ = true;
+      else if (ch === ',') { row.push(field.trim()); field = ''; }
+      else if (ch === '\n' || ch === '\r') {
+        if (ch === '\r' && csv[i+1] === '\n') i++;
+        row.push(field.trim());
+        if (row.some(c => c)) rows.push(row);
+        row = []; field = '';
+      } else field += ch;
+    }
+  }
+  if (field || row.length) { row.push(field.trim()); if (row.some(c => c)) rows.push(row); }
+
+  // ── Find header row — must have FLOOR and GRANITE or MS ──────────────────
+  let hIdx = -1;
+  for (let i = 0; i < Math.min(rows.length, 6); i++) {
+    const u = rows[i].map(c => (c||'').toUpperCase());
+    if (u.some(h => h.includes('FLOOR')) &&
+        u.some(h => h.includes('GRANITE') || h.includes('MS RAILING') || h.includes('RAILING INSTALL'))) {
+      hIdx = i; break;
+    }
+  }
+  if (hIdx < 0) return [];
+
+  const H = rows[hIdx].map(c => (c||'').toUpperCase().trim());
+  const iFloor   = H.findIndex(h => h.includes('FLOOR'));
+  const iGranite = H.findIndex(h => h.includes('GRANITE'));
+  const iMS      = H.findIndex(h => h.includes('MS') && h.includes('RAILING') || h.includes('RAILING INSTALL'));
+
+  const stageIdxs = [
+    { idx: iGranite, name: 'Granite Fixing'      },
+    { idx: iMS,      name: 'MS Railing Instal.'  },
+  ].filter(s => s.idx >= 0);
+
+  if (stageIdxs.length === 0) return [];
+
+  // ── Group data rows by floor ──────────────────────────────────────────────
+  const floorGroups = [];
+  let cur = null;
+  for (let i = hIdx + 1; i < rows.length; i++) {
+    const r = rows[i];
+    const f0 = (r[iFloor >= 0 ? iFloor : 0] || '').trim();
+    if (f0 && /^\d/.test(f0)) {
+      if (cur) floorGroups.push(cur);
+      cur = { label: /floor/i.test(f0) ? f0 : `Floor ${f0}`, rows: [r] };
+    } else if (cur && r.some(c => c)) {
+      cur.rows.push(r);
+    }
+  }
+  if (cur) floorGroups.push(cur);
+
+  // ── Build items — one per floor ───────────────────────────────────────────
+  const items = [];
+  for (const g of floorGroups) {
+    const stages = stageIdxs.map(({ idx, name }) => {
+      const vals = g.rows.map(r => _stageCellStat(r[idx] || ''));
+      const done  = vals.filter(v => v === 'done').length;
+      const delay = vals.filter(v => v === 'delay').length;
+      // Capture any non-boolean raw text for the remark
+      const raw = g.rows.map(r => (r[idx]||'').trim())
+        .find(v => v && v.toUpperCase() !== 'TRUE' && v.toUpperCase() !== 'FALSE') || '';
+      let status;
+      if (done === vals.length)        status = 'done';
+      else if (done > 0 || delay > 0)  status = 'delay';
+      else                              status = 'pending';
+      return { shortName: name, status, raw };
+    });
+
+    // Delay-promotion rule: if Granite is done but MS Railing is still pending,
+    // the railing is overdue — mark it delayed.
+    const granite = stages.find(s => s.shortName === 'Granite Fixing');
+    const msRail  = stages.find(s => s.shortName === 'MS Railing Instal.');
+    if (granite && msRail && granite.status === 'done' && msRail.status === 'pending') {
+      msRail.status = 'delay';
+      msRail.raw    = 'Pending after granite done';
+    }
+
+    const doneCount  = stages.filter(s => s.status === 'done').length;
+    const delayCount = stages.filter(s => s.status === 'delay').length;
+    let status;
+    if (doneCount === stages.length)              status = 'done';
+    else if (doneCount === 0 && delayCount === 0) status = 'pending';
+    else                                           status = 'delay';
+
+    const remark = stages.filter(s => s.status !== 'done' && s.raw)
+      .map(s => `${s.shortName}: ${s.raw}`).join(', ');
+
+    items.push({
+      contractor: 'Staircase Railing',
+      tower: towerLabel,
+      label: g.label,
+      done: doneCount, total: stages.length,
+      status, remark,
+      stageNames: stages.map(s => s.shortName),
+      states: stages.map(s => s.status === 'done' ? 'TRUE' : 'FALSE'),
+      stageBreakdown: stages,
+    });
+  }
+  return items;
+}
+
+async function loadStaircaseRailing(fileId) {
+  const tabs = [
+    { gid: 0,          tower: 'T1' },
+    { gid: 1940149409, tower: 'T2' },
+    { gid: 645251445,  tower: 'T3' },
+    { gid: 1211789135, tower: 'T4' },
+    { gid: 553356579,  tower: 'T5' },
+    { gid: 999718682,  tower: 'T6' },
+  ];
+  const results = await Promise.all(tabs.map(async ({ gid, tower }) => {
+    try { return parseStaircaseRailingTab(await fetchSheetTabRaw(fileId, gid), tower); }
     catch { return []; }
   }));
   return results.flat();
@@ -2903,7 +3056,8 @@ async function loadCategory(key) {
     const FHC_DOOR_ID          = '1TgATZVcqM9MXGWBwjbvLDcStQDkOFA6LdfGEuVNq-Yw';
     const KITCHEN_RAILING_ID   = '1vkKaTDly6ZYdt6gxwvIONqWQPPkRCcfdrVSLjHU_gZg';
     const KITCHEN_SHAFT_ID     = '1Eq5_nqi6AMyvbNLsiAw6I4DafCuLDJSPodjSLETsqPI';
-    const LOUVER_DOOR_ID       = '1iRSXhmmFZlJK16VKR1zT7qmQG7VU6JuHksb1LSVPaPU';
+    const LOUVER_DOOR_ID           = '1iRSXhmmFZlJK16VKR1zT7qmQG7VU6JuHksb1LSVPaPU';
+    const STAIRCASE_RAILING_ID     = '1sjogxhrfICSqmfpTBHLr56Dk58WAsu1oCSrh9Ag-pGo';
     const FACADE_OVERRIDES = {
       '1xKCbALNOZb9gOE2turvdtVuyOqD5AXqVsc1UhuNdW1Y': parseKrishnaFacade,
       '1Fis0XdnyzqlvxUOCgK6is1hER5flR2cCfp9Jeqs7Ygw': parseBaffleCeiling,
@@ -2932,6 +3086,8 @@ async function loadCategory(key) {
       if (f.fileId === KITCHEN_SHAFT_ID) return loadKitchenShaftDoor(KITCHEN_SHAFT_ID).catch(()=>[]);
       // Louver Door: dedicated per-tower loader (T1–T6 by GID)
       if (f.fileId === LOUVER_DOOR_ID) return loadLouverDoor(LOUVER_DOOR_ID).catch(()=>[]);
+      // Staircase Railing: dedicated per-tower loader (T1–T6 by GID); 2 stages tracked
+      if (f.fileId === STAIRCASE_RAILING_ID) return loadStaircaseRailing(STAIRCASE_RAILING_ID).catch(()=>[]);
       return fetchSheet(f.fileId).then(md => {
         const overrideParser = FACADE_OVERRIDES[f.fileId];
         return overrideParser
