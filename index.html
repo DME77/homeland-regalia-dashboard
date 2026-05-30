@@ -1612,6 +1612,139 @@ async function loadKitchenRailing(fileId) {
   return results.flat();
 }
 
+// ─── Kitchen Shaft Door — per-tower parser (T3–T6) ──────────────────────────
+// Tracks 3 stages: Size Confirmation from Vendor, Shutter Received at Site,
+// Outer Frame/Door Installation. Per-floor (LHS+RHS aggregated).
+// Remark: if Size Confirmation not done → shows Plaster of Cavity status.
+function parseKitchenShaftDoorTab(csv, towerLabel) {
+  const rows = [];
+  let row = [], field = '', inQ = false;
+  for (let i = 0; i <= csv.length; i++) {
+    const ch = i < csv.length ? csv[i] : '\n';
+    if (inQ) {
+      if (ch === '"' && csv[i+1] === '"') { field += '"'; i++; }
+      else if (ch === '"') inQ = false;
+      else field += ch;
+    } else {
+      if (ch === '"') inQ = true;
+      else if (ch === ',') { row.push(field.trim()); field = ''; }
+      else if (ch === '\n' || ch === '\r') {
+        if (ch === '\r' && csv[i+1] === '\n') i++;
+        row.push(field.trim());
+        if (row.some(c => c)) rows.push(row);
+        row = []; field = '';
+      } else field += ch;
+    }
+  }
+  if (field || row.length) { row.push(field.trim()); if (row.some(c => c)) rows.push(row); }
+
+  // Find header row (has FLOOR and PLASTER or SIZE)
+  let hIdx = -1;
+  for (let i = 0; i < Math.min(rows.length, 8); i++) {
+    const u = rows[i].map(c => (c||'').toUpperCase());
+    if (u.some(h => h.includes('FLOOR')) && u.some(h => h.includes('PLASTER') || h.includes('SIZE'))) {
+      hIdx = i; break;
+    }
+  }
+  if (hIdx < 0) return [];
+
+  const H = rows[hIdx].map(c => (c||'').toUpperCase().trim());
+  const iFloor   = H.findIndex(h => h.includes('FLOOR'));
+  const iPlaster = H.findIndex(h => h.includes('PLASTER') || h.includes('CAVITY'));
+  const iSize    = H.findIndex(h => h.includes('SIZE') && h.includes('CONFIRM'));
+  const iShutter = H.findIndex(h => h.includes('SHUTTER') && (h.includes('UNIT') || h.includes('RECEIV')));
+  const iInstall = H.findIndex(h => h.includes('OUTER') || h.includes('FRAME') || (h.includes('DOOR') && h.includes('INSTALL')));
+
+  const stageIdxs = [
+    { idx: iSize,    name: 'Size Confirm'  },
+    { idx: iShutter, name: 'Shutter Rcvd'  },
+    { idx: iInstall, name: 'Door Install'  },
+  ].filter(s => s.idx >= 0);
+
+  if (stageIdxs.length === 0) return [];
+
+  // Group rows by floor (col 0 non-empty + starts with digit = new floor)
+  const floorGroups = [];
+  let cur = null;
+  for (let i = hIdx + 1; i < rows.length; i++) {
+    const r = rows[i];
+    const f0 = (r[iFloor >= 0 ? iFloor : 0] || '').trim();
+    if (f0 && /^\d/.test(f0)) {
+      if (cur) floorGroups.push(cur);
+      const lbl = /floor/i.test(f0) ? f0 : `Floor ${f0}`;
+      cur = { label: lbl, rows: [r] };
+    } else if (cur && r.some(c => c)) {
+      cur.rows.push(r);
+    }
+  }
+  if (cur) floorGroups.push(cur);
+
+  const items = [];
+  for (const g of floorGroups) {
+    // Per-stage status (aggregate LHS + RHS + any other units)
+    const stages = stageIdxs.map(({ idx, name }) => {
+      const vals = g.rows.map(r => _stageCellStat(r[idx] || ''));
+      const done  = vals.filter(v => v === 'done').length;
+      const delay = vals.filter(v => v === 'delay').length;
+      const raw   = g.rows.map(r => (r[idx]||'').trim())
+        .find(v => v && v.toUpperCase() !== 'TRUE' && v.toUpperCase() !== 'FALSE') || '';
+      let status;
+      if (done === vals.length)        status = 'done';
+      else if (done > 0 || delay > 0)  status = 'delay';
+      else                              status = 'pending';
+      return { shortName: name, status, raw };
+    });
+
+    const doneCount  = stages.filter(s => s.status === 'done').length;
+    const delayCount = stages.filter(s => s.status === 'delay').length;
+    let status;
+    if (doneCount === stages.length)              status = 'done';
+    else if (doneCount === 0 && delayCount === 0) status = 'pending';
+    else                                           status = 'delay';
+
+    // Remark: if Size Confirmation not done, show Plaster of Cavity status
+    const sizeStage = stages.find(s => s.shortName === 'Size Confirm');
+    let remark = '';
+    if (sizeStage && sizeStage.status !== 'done' && iPlaster >= 0) {
+      const pVals = g.rows.map(r => _stageCellStat(r[iPlaster] || ''));
+      const pDone = pVals.filter(v => v === 'done').length;
+      const plasterNote = pDone === pVals.length ? 'Plaster ✓ done'
+        : pDone > 0 ? `Plaster ${pDone}/${pVals.length}`
+        : 'Plaster ✗ pending';
+      remark = plasterNote;
+    }
+    const delayNotes = stages.filter(s => s.status !== 'done' && s.raw)
+      .map(s => `${s.shortName}: ${s.raw}`).join('; ');
+    if (delayNotes) remark = remark ? `${remark} · ${delayNotes}` : delayNotes;
+
+    items.push({
+      contractor: 'Kitchen Shaft Door',
+      tower: towerLabel,
+      label: g.label,
+      done: doneCount, total: stages.length,
+      status, remark,
+      stageNames: stages.map(s => s.shortName),
+      states: stages.map(s => s.status === 'done' ? 'TRUE' : 'FALSE'),
+      stageBreakdown: stages,
+    });
+  }
+  return items;
+}
+
+async function loadKitchenShaftDoor(fileId) {
+  const tabs = [
+    { gid: 1059500542, tower: 'T3' },
+    { gid: 1211789135, tower: 'T4' },
+    { gid: 553356579,  tower: 'T5' },
+    { gid: 1999718682, tower: 'T6' },
+  ];
+  const results = await Promise.all(tabs.map(async ({ gid, tower }) => {
+    try { return parseKitchenShaftDoorTab(await fetchSheetTabRaw(fileId, gid), tower); }
+    catch { return []; }
+  }));
+  return results.flat();
+}
+
 // Generic MEP-sheet parser. Detects each table block, identifies stage-boolean columns,
 // and classifies each row as done/delay/pending. Tags entries with contractor + tower.
 function parseMEPSheet(md, contractorTag, defaultTower) {
@@ -2646,6 +2779,7 @@ async function loadCategory(key) {
     const BAFFLE_ID        = '1Fis0XdnyzqlvxUOCgK6is1hER5flR2cCfp9Jeqs7Ygw';
     const FHC_DOOR_ID          = '1TgATZVcqM9MXGWBwjbvLDcStQDkOFA6LdfGEuVNq-Yw';
     const KITCHEN_RAILING_ID   = '1vkKaTDly6ZYdt6gxwvIONqWQPPkRCcfdrVSLjHU_gZg';
+    const KITCHEN_SHAFT_ID     = '1Eq5_nqi6AMyvbNLsiAw6I4DafCuLDJSPodjSLETsqPI';
     const FACADE_OVERRIDES = {
       '1xKCbALNOZb9gOE2turvdtVuyOqD5AXqVsc1UhuNdW1Y': parseKrishnaFacade,
       '1Fis0XdnyzqlvxUOCgK6is1hER5flR2cCfp9Jeqs7Ygw': parseBaffleCeiling,
@@ -2670,6 +2804,8 @@ async function loadCategory(key) {
       if (f.fileId === FHC_DOOR_ID) return loadFHCDoor(FHC_DOOR_ID).catch(()=>[]);
       // Kitchen Railing: dedicated per-tower loader (T3–T6 by GID)
       if (f.fileId === KITCHEN_RAILING_ID) return loadKitchenRailing(KITCHEN_RAILING_ID).catch(()=>[]);
+      // Kitchen Shaft Door: dedicated per-tower loader (T3–T6 by GID)
+      if (f.fileId === KITCHEN_SHAFT_ID) return loadKitchenShaftDoor(KITCHEN_SHAFT_ID).catch(()=>[]);
       return fetchSheet(f.fileId).then(md => {
         const overrideParser = FACADE_OVERRIDES[f.fileId];
         return overrideParser
