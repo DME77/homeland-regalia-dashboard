@@ -1745,6 +1745,129 @@ async function loadKitchenShaftDoor(fileId) {
   return results.flat();
 }
 
+// ─── Louver Door — per-tower parser (T1–T6) ─────────────────────────────────
+// 4 stages: Toe wall Granite Fixing, Final Sizes to Vendor,
+// Material Received on Site, Installation of Doors.
+// Groups LHS + RHS (or all flats) per floor, uses _stageCellStat for date-awareness.
+function parseLouverDoorTab(csv, towerLabel) {
+  const rows = [];
+  let row = [], field = '', inQ = false;
+  for (let i = 0; i <= csv.length; i++) {
+    const ch = i < csv.length ? csv[i] : '\n';
+    if (inQ) {
+      if (ch === '"' && csv[i+1] === '"') { field += '"'; i++; }
+      else if (ch === '"') inQ = false;
+      else field += ch;
+    } else {
+      if (ch === '"') inQ = true;
+      else if (ch === ',') { row.push(field.trim()); field = ''; }
+      else if (ch === '\n' || ch === '\r') {
+        if (ch === '\r' && csv[i+1] === '\n') i++;
+        row.push(field.trim());
+        if (row.some(c => c)) rows.push(row);
+        row = []; field = '';
+      } else field += ch;
+    }
+  }
+  if (field || row.length) { row.push(field.trim()); if (row.some(c => c)) rows.push(row); }
+
+  // Find header row — has FLOOR and at least one key stage word
+  let hIdx = -1;
+  for (let i = 0; i < Math.min(rows.length, 8); i++) {
+    const u = rows[i].map(c => (c||'').toUpperCase());
+    if (u.some(h => h.includes('FLOOR')) &&
+        u.some(h => h.includes('LOUVER') || h.includes('TOE') || h.includes('INSTALL') || h.includes('FINAL'))) {
+      hIdx = i; break;
+    }
+  }
+  if (hIdx < 0) return [];
+
+  const H = rows[hIdx].map(c => (c||'').toUpperCase().trim());
+  const iFloor    = H.findIndex(h => h.includes('FLOOR'));
+  const iGranite  = H.findIndex(h => (h.includes('TOE') && h.includes('GRANITE')) || (h.includes('TOE') && h.includes('LOUVER')));
+  const iFinal    = H.findIndex(h => h.includes('FINAL') && (h.includes('SIZE') || h.includes('VENDOR')));
+  const iMaterial = H.findIndex(h => h.includes('MATERIAL') && (h.includes('RECEIV') || h.includes('SITE')));
+  const iInstall  = H.findIndex(h => h.includes('INSTALL') && (h.includes('DOOR') || h.includes('LOUVER')));
+
+  const stageIdxs = [
+    { idx: iGranite,  name: 'Toe Granite'   },
+    { idx: iFinal,    name: 'Final Sizes'   },
+    { idx: iMaterial, name: 'Material Rcvd' },
+    { idx: iInstall,  name: 'Installation'  },
+  ].filter(s => s.idx >= 0);
+
+  if (stageIdxs.length === 0) return [];
+
+  // Group rows by floor (col 0 non-empty + starts with digit = new floor)
+  const floorGroups = [];
+  let cur = null;
+  for (let i = hIdx + 1; i < rows.length; i++) {
+    const r = rows[i];
+    const f0 = (r[iFloor >= 0 ? iFloor : 0] || '').trim();
+    if (f0 && /^\d/.test(f0)) {
+      if (cur) floorGroups.push(cur);
+      cur = { label: /floor/i.test(f0) ? f0 : `Floor ${f0}`, rows: [r] };
+    } else if (cur && r.some(c => c)) {
+      cur.rows.push(r);
+    }
+  }
+  if (cur) floorGroups.push(cur);
+
+  const items = [];
+  for (const g of floorGroups) {
+    const stages = stageIdxs.map(({ idx, name }) => {
+      const vals = g.rows.map(r => _stageCellStat(r[idx] || ''));
+      const done  = vals.filter(v => v === 'done').length;
+      const delay = vals.filter(v => v === 'delay').length;
+      const raw   = g.rows.map(r => (r[idx]||'').trim())
+        .find(v => v && v.toUpperCase() !== 'TRUE' && v.toUpperCase() !== 'FALSE') || '';
+      let status;
+      if (done === vals.length)        status = 'done';
+      else if (done > 0 || delay > 0)  status = 'delay';
+      else                              status = 'pending';
+      return { shortName: name, status, raw };
+    });
+
+    const doneCount  = stages.filter(s => s.status === 'done').length;
+    const delayCount = stages.filter(s => s.status === 'delay').length;
+    let status;
+    if (doneCount === stages.length)              status = 'done';
+    else if (doneCount === 0 && delayCount === 0) status = 'pending';
+    else                                           status = 'delay';
+
+    const remark = stages.filter(s => s.status !== 'done' && s.raw)
+      .map(s => `${s.shortName}: ${s.raw}`).join(', ');
+
+    items.push({
+      contractor: 'Louver Door',
+      tower: towerLabel,
+      label: g.label,
+      done: doneCount, total: stages.length,
+      status, remark,
+      stageNames: stages.map(s => s.shortName),
+      states: stages.map(s => s.status === 'done' ? 'TRUE' : 'FALSE'),
+      stageBreakdown: stages,
+    });
+  }
+  return items;
+}
+
+async function loadLouverDoor(fileId) {
+  const tabs = [
+    { gid: 0,          tower: 'T1' },
+    { gid: 582406625,  tower: 'T2' },
+    { gid: 1126853432, tower: 'T3' },
+    { gid: 1010004383, tower: 'T4' },
+    { gid: 670789053,  tower: 'T5' },
+    { gid: 51551575,   tower: 'T6' },
+  ];
+  const results = await Promise.all(tabs.map(async ({ gid, tower }) => {
+    try { return parseLouverDoorTab(await fetchSheetTabRaw(fileId, gid), tower); }
+    catch { return []; }
+  }));
+  return results.flat();
+}
+
 // Generic MEP-sheet parser. Detects each table block, identifies stage-boolean columns,
 // and classifies each row as done/delay/pending. Tags entries with contractor + tower.
 function parseMEPSheet(md, contractorTag, defaultTower) {
@@ -2780,6 +2903,7 @@ async function loadCategory(key) {
     const FHC_DOOR_ID          = '1TgATZVcqM9MXGWBwjbvLDcStQDkOFA6LdfGEuVNq-Yw';
     const KITCHEN_RAILING_ID   = '1vkKaTDly6ZYdt6gxwvIONqWQPPkRCcfdrVSLjHU_gZg';
     const KITCHEN_SHAFT_ID     = '1Eq5_nqi6AMyvbNLsiAw6I4DafCuLDJSPodjSLETsqPI';
+    const LOUVER_DOOR_ID       = '1iRSXhmmFZlJK16VKR1zT7qmQG7VU6JuHksb1LSVPaPU';
     const FACADE_OVERRIDES = {
       '1xKCbALNOZb9gOE2turvdtVuyOqD5AXqVsc1UhuNdW1Y': parseKrishnaFacade,
       '1Fis0XdnyzqlvxUOCgK6is1hER5flR2cCfp9Jeqs7Ygw': parseBaffleCeiling,
@@ -2806,6 +2930,8 @@ async function loadCategory(key) {
       if (f.fileId === KITCHEN_RAILING_ID) return loadKitchenRailing(KITCHEN_RAILING_ID).catch(()=>[]);
       // Kitchen Shaft Door: dedicated per-tower loader (T3–T6 by GID)
       if (f.fileId === KITCHEN_SHAFT_ID) return loadKitchenShaftDoor(KITCHEN_SHAFT_ID).catch(()=>[]);
+      // Louver Door: dedicated per-tower loader (T1–T6 by GID)
+      if (f.fileId === LOUVER_DOOR_ID) return loadLouverDoor(LOUVER_DOOR_ID).catch(()=>[]);
       return fetchSheet(f.fileId).then(md => {
         const overrideParser = FACADE_OVERRIDES[f.fileId];
         return overrideParser
