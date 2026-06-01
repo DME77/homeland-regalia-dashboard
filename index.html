@@ -2220,8 +2220,11 @@ function parseInteriorExecution(md, contractorTag, defaultTower) {
         iAreaCol = 0; // fallback — first col holds the row label
       }
       stageIdxs = []; stageNames = [];
+      // Only track columns E:O (indices 4–14) and Y:Z (indices 24–25)
+      const INTERIOR_STAGE_COLS = new Set([4,5,6,7,8,9,10,11,12,13,14,24,25]);
       for (let k = 0; k < head.length; k++) {
         if (k === iAreaCol) continue;
+        if (!INTERIOR_STAGE_COLS.has(k)) continue;
         const h = head[k];
         if (!h) continue;
         // Skip non-stage helper columns
@@ -2242,19 +2245,21 @@ function parseInteriorExecution(md, contractorTag, defaultTower) {
     const flat  = parseInt(tm[2]);
     const floor = Math.floor(flat / 10);
     const contractor = inferContractor(tower, floor, flat);
-    const states = stageIdxs.map(k => (c[k]||'').trim());
-    const trueCount = states.filter(s => s.toUpperCase() === 'TRUE').length;
+    const states  = stageIdxs.map(k => (c[k]||'').trim());
     const naCount = states.filter(s => /^NA$/i.test(s) || s === '').length;
-    const noteStates = states.filter(s => {
+    const trueCount = states.filter(s => s.toUpperCase() === 'TRUE').length;
+    // Use _stageCellStat so future dates → pending (not delay)
+    const delayNotes = states.filter(s => {
       const u = s.toUpperCase();
-      return u !== 'TRUE' && u !== 'FALSE' && u !== 'NA' && s !== '';
+      if (u === 'TRUE' || u === 'FALSE' || u === 'NA' || s === '') return false;
+      return _stageCellStat(s) === 'delay'; // past date or text note → delay; future date → pending
     });
     const totalReal = stageIdxs.length - naCount;
     let status;
     if (totalReal > 0 && trueCount === totalReal) status = 'done';
-    else if (trueCount === 0 && noteStates.length === 0) status = 'pending';
+    else if (trueCount === 0 && delayNotes.length === 0) status = 'pending';
     else status = 'delay';
-    const remark = noteStates.slice(0, 3).join('; ');
+    const remark = delayNotes.slice(0, 3).join('; ');
     items.push({
       contractor,
       tower,
