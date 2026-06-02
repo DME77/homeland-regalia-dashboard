@@ -418,6 +418,8 @@ let activeKitchenSection = 'all';      // Commercial Kitchen: 'all' (every sheet
 let activeKitchenArea = 'all';         // Commercial Kitchen: Area filter (col B — e.g. "Main Kitchen (Stilt)")
 let activeKitchenSubArea = 'all';      // Commercial Kitchen: Sub-area filter (col C — Beverage/Cold/etc.)
 
+let activeLabourDate = '';  // 'YYYY-MM-DD' selected by date picker; '' = today/live
+
 let activePurchasableSub = 'kitchen';  // Purchasable Items tab: 'kitchen' or 'watcon'
 let activeWatconDept = 'dwg';          // Watcon sub-tab: 'dwg' | 'execution' | 'pumps'
 
@@ -691,7 +693,17 @@ function parseTendering(md) {
 //   Row N+1: REQUIRED | - | 170 | 15 …
 function parseInteriorLabour(md) {
   const lines = splitTableRows(md);
-  if (lines.length < 3) return { contractors: [], trades: [] };
+  if (lines.length < 3) return { contractors: [], trades: [], reportDate: '' };
+
+  // Extract report date from title row (Row 0: "DAILY MANPOWER REPORT" | date | ...)
+  let reportDate = '';
+  const titleCells = parseRow(lines[0]);
+  for (const cell of titleCells) {
+    const t = (cell || '').trim();
+    if (t && /\d{1,2}[-\/]\w+/.test(t) && !/REPORT|MANPOWER/i.test(t)) {
+      reportDate = t; break;
+    }
+  }
 
   // Find the real header row — the one whose col[0] looks like "S.NO" / "S NO"
   // or whose col[1] contains "CONTRACTOR". Falls back to row 0.
@@ -744,7 +756,7 @@ function parseInteriorLabour(md) {
       trades: trades.reduce((acc, t) => { acc[t.name] = t.byContractor[ci] || 0; return acc; }, {}),
     }))
     .filter(c => c.name); // drop blank-name columns (empty trailing cells)
-  return { contractors, trades };
+  return { contractors, trades, reportDate };
 }
 
 // MEP Manpower: simple 4-column daily sheet.
@@ -754,7 +766,18 @@ function parseInteriorLabour(md) {
 function parseMEPLabour(md) {
   const lines = splitTableRows(md);
   if (lines.length < 2) return [];
-  const headers = parseRow(lines[0]).map(h => (h||'').toLowerCase().trim());
+  // Try to extract a report date from the first row if it looks like a title (not a header)
+  let _mepReportDate = '';
+  const firstCells = parseRow(lines[0]);
+  const looksLikeTitle = !firstCells.some(h => /contractor\s*(type|name)|committed|manpower/i.test(h||''));
+  if (looksLikeTitle) {
+    for (const cell of firstCells) {
+      const t = (cell || '').trim();
+      if (t && /\d{1,2}[-\/]\w+/.test(t)) { _mepReportDate = t; break; }
+    }
+  }
+  const headers = parseRow(looksLikeTitle ? lines[1] || lines[0] : lines[0]).map(h => (h||'').toLowerCase().trim());
+  const startIdx = looksLikeTitle ? 2 : 1;
   const findIdx = (re, fallback) => {
     const i = headers.findIndex(h => re.test(h));
     return i >= 0 ? i : fallback;
@@ -764,7 +787,8 @@ function parseMEPLabour(md) {
   const iCom  = findIdx(/committed/, 2);
   const iTot  = findIdx(/manpower|today/, 3);
   const out = [];
-  for (let i = 1; i < lines.length; i++) {
+  out._reportDate = _mepReportDate; // attach so caller can read it
+  for (let i = startIdx; i < lines.length; i++) {
     const c = parseRow(lines[i]);
     const type = (c[iType] || '').trim();
     const name = (c[iName] || '').trim();
@@ -4900,14 +4924,18 @@ async function renderLabour() {
     delete DATA['facadeLabour'];
     delete DATA['mepLabour'];
 
+    // Collect report dates detected from each sheet's title row
+    const reportDates = [];
+
     if (activeLabourSub === 'interior' || activeLabourSub === 'all') {
       try {
         const i = await loadCategory('interiorLabour');
         sources.push('Interior Labour');
         sourceFiles.push({ label:'Interior', fileId: FILES.interiorLabour });
+        if (i.reportDate) reportDates.push({ label: 'Interior', date: i.reportDate });
         i.contractors.forEach(c => rows.push({ kind:'interior', vendor: c.name, activity: 'Interior — multi-trade', present: c.present, committed: c.committed, remarks: '' }));
       } catch(e) {
-        delete DATA['interiorLabour']; // clear cache so next reload retries
+        delete DATA['interiorLabour'];
         fetchErrors.push({ label:'Interior Labour', fileId: FILES.interiorLabour, msg: e.message });
       }
     }
@@ -4916,6 +4944,7 @@ async function renderLabour() {
         const f = await loadCategory('facadeLabour');
         sources.push('Facade Labour');
         sourceFiles.push({ label:'Facade', fileId: FILES.facadeLabour });
+        if (f.reportDate) reportDates.push({ label: 'Facade', date: f.reportDate });
         f.vendors.forEach(v => rows.push({ kind:'facade', vendor: v.vendor, activity: v.activity || '—', present: v.present, committed: v.committed, remarks: v.remarks || '' }));
       } catch(e) {
         delete DATA['facadeLabour'];
@@ -4929,6 +4958,7 @@ async function renderLabour() {
         const mep = await loadCategory('mepLabour');
         sources.push('MEP Labour');
         sourceFiles.push({ label:'MEP', fileId: FILES.mepLabour });
+        if (mep._reportDate) reportDates.push({ label: 'MEP', date: mep._reportDate });
         const filtered = activeLabourSub === 'all'
           ? mep
           : mep.filter(r => mepTypeMatchesSub(r.type, activeLabourSub));
@@ -4945,6 +4975,52 @@ async function renderLabour() {
         fetchErrors.push({ label:'MEP Labour', fileId: FILES.mepLabour, msg: e.message });
       }
     }
+
+    // ── Date picker UI ─────────────────────────────────────────────────────
+    // Build a list of the last 12 months for the quick-select month bar
+    const todayDate  = new Date();
+    const todayStr   = todayDate.toISOString().split('T')[0]; // YYYY-MM-DD
+    if (!activeLabourDate) activeLabourDate = todayStr;
+    const isToday    = activeLabourDate === todayStr;
+
+    // Build last 12 months for quick-select
+    const monthBtns = [];
+    for (let m = 0; m < 12; m++) {
+      const d   = new Date(todayDate.getFullYear(), todayDate.getMonth() - m, 1);
+      const val = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+      const lbl = d.toLocaleString('en-IN', { month: 'short', year: 'numeric' });
+      const sel = activeLabourDate.startsWith(val);
+      monthBtns.push({ val, lbl, sel });
+    }
+
+    // Sheet-detected date string (best guess from title rows)
+    const detectedDateStr = reportDates.length > 0
+      ? reportDates.map(r => `${r.label}: <b>${escapeHtml(r.date)}</b>`).join(' &nbsp;·&nbsp; ')
+      : 'Not detected';
+
+    const dateBannerHtml = `
+      <div style="background:var(--card-bg);border:1px solid var(--card-border);border-radius:14px;padding:14px 16px;margin-bottom:16px">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px">
+          <span style="font-size:11px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:1.2px">📅 Report Date</span>
+          <input type="date" id="labour-date-picker" value="${escapeHtml(activeLabourDate)}"
+            style="border:1px solid var(--card-border);border-radius:8px;padding:5px 10px;font-size:13px;font-family:inherit;background:var(--card-bg);color:var(--body-color);cursor:pointer;font-weight:600">
+          ${!isToday
+            ? `<button id="labour-today-btn" style="border:1px solid #93c5fd;background:#eff6ff;color:#1d4ed8;border-radius:8px;padding:5px 14px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">↩ Today</button>
+               <span style="font-size:11px;color:#b45309;font-weight:600;background:#fef3c7;border-radius:6px;padding:3px 10px">📋 Backdate view — ${escapeHtml(activeLabourDate)}</span>`
+            : `<span style="font-size:11px;color:#16a34a;font-weight:700;background:#dcfce7;border-radius:6px;padding:3px 10px">🟢 Live — Today</span>`}
+        </div>
+        <div style="font-size:10px;font-weight:700;color:#94a3b8;letter-spacing:1px;text-transform:uppercase;margin-bottom:6px">Quick select month</div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px">
+          ${monthBtns.map(b => `<button class="labour-month-btn" data-month="${escapeHtml(b.val)}"
+            style="border:1px solid ${b.sel?'#2d5986':'var(--card-border)'};background:${b.sel?'#1e3a5f':'var(--sub-btn-bg)'};color:${b.sel?'#fff':'var(--sub-btn-color)'};border-radius:8px;padding:4px 12px;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;transition:all 0.15s">
+            ${escapeHtml(b.lbl)}
+          </button>`).join('')}
+        </div>
+        <div style="font-size:11px;color:#94a3b8;margin-top:10px">
+          🗂 Sheet date detected: ${detectedDateStr}
+          ${!isToday ? `&nbsp;&nbsp;<span style="color:#64748b">· Note: sheets currently hold live data — connect historical tabs for full backdate support</span>` : ''}
+        </div>
+      </div>`;
 
     // Show per-sheet errors as a fixable warning (doesn't block the render)
     const errBanner = fetchErrors.length === 0 ? '' : `
@@ -5002,6 +5078,7 @@ async function renderLabour() {
       <div class="eyebrow">${sub.icon} ${escapeHtml(sub.label)} Labour <span class="tag live">LIVE</span></div>
       ${subnav}
       ${liveBar('live', rows.length, sources.join(' · '))}
+      ${dateBannerHtml}
       ${errBanner}
       ${lastEditPlaceholder}
       ${kpiHtml}
@@ -5009,13 +5086,24 @@ async function renderLabour() {
       <div class="tbl-wrap">
         <div class="tbl-head" style="background:#f0f7ff;border-bottom:1px solid #bfdbfe">
           <span>${sub.icon}</span>
-          <span class="tbl-title" style="color:#1e3a5f">${escapeHtml(sub.label)} — Labour Deployment</span>
+          <span class="tbl-title" style="color:#1e3a5f">${escapeHtml(sub.label)} — Labour Deployment · ${!isToday ? `<span style="color:#b45309">${escapeHtml(activeLabourDate)}</span>` : 'Today'}</span>
           <span class="tbl-count" style="background:#2d5986">${rows.length} contractors</span>
         </div>
         ${tableHtml}
       </div>`;
     container.querySelectorAll('.sub-btn').forEach(b => {
       b.addEventListener('click', () => { activeLabourSub = b.dataset.key; renderLabour(); });
+    });
+    const datePicker = container.querySelector('#labour-date-picker');
+    if (datePicker) datePicker.addEventListener('change', () => { activeLabourDate = datePicker.value || ''; renderLabour(); });
+    const todayBtn = container.querySelector('#labour-today-btn');
+    if (todayBtn) todayBtn.addEventListener('click', () => { activeLabourDate = ''; renderLabour(); });
+    container.querySelectorAll('.labour-month-btn').forEach(b => {
+      b.addEventListener('click', () => {
+        // Set date to the first day of the selected month
+        activeLabourDate = b.dataset.month + '-01';
+        renderLabour();
+      });
     });
   } catch (e) {
     container.innerHTML = `<div class="eyebrow">${sub.icon} ${escapeHtml(sub.label)} Labour</div>${subnav}<div class="error"><strong>Failed to load:</strong> ${escapeHtml(e?.message || String(e))}</div>`;
