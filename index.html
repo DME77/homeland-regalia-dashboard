@@ -2209,8 +2209,6 @@ function _matchesInteriorStage(rawHeader) {
   // More-specific rules first to prevent false matches
   if (/SERVANT/.test(h) && /CEIL/.test(h))                             return 'SERVANT WASHROOM CEILING';
   if (/SERVANT/.test(h) && /TILE/.test(h))                             return 'SERVANT WASHROOM TILE';
-  if (/CEIL/.test(h)    && /LIGHT/.test(h) && /CUT/.test(h))          return 'CEILING LIGHT CUTTING';
-  if (/WASHROOM/.test(h) && /TILE/.test(h) && /CUT/.test(h))          return 'WASHROOM TILES CUTTING';
   if (/WASHROOM/.test(h) && /WALL/.test(h) && /TILE/.test(h))         return 'WASHROOM WALL TILES';
   if (/WASHROOM/.test(h) && /CEIL/.test(h))                            return 'WASHROOM CEILING';
   if (/WASHROOM/.test(h) && /FLOOR/.test(h))                           return 'WASHROOM FLOORING';
