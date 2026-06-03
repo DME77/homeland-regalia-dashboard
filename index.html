@@ -2199,6 +2199,31 @@ function parseMEPSheet(md, contractorTag, defaultTower) {
 
 // Interior execution — multi-tab workbook with 13+ contractor sheets per tower/floor range.
 // Each tab in the source workbook becomes a separate markdown table block in the MCP output.
+// ─── Interior stage name matcher ──────────────────────────────────────────
+// Maps any spreadsheet column header to one of the 13 canonical stage names.
+// Returns the canonical name string, or null if not a tracked stage.
+// Name-based (not column-index) so it works across all contractor tabs
+// regardless of their physical column layout.
+function _matchesInteriorStage(rawHeader) {
+  const h = (rawHeader || '').toUpperCase().replace(/[^A-Z0-9]/g, ' ').replace(/\s+/g, ' ').trim();
+  // More-specific rules first to prevent false matches
+  if (/SERVANT/.test(h) && /CEIL/.test(h))                             return 'SERVANT WASHROOM CEILING';
+  if (/SERVANT/.test(h) && /TILE/.test(h))                             return 'SERVANT WASHROOM TILE';
+  if (/CEIL/.test(h)    && /LIGHT/.test(h) && /CUT/.test(h))          return 'CEILING LIGHT CUTTING';
+  if (/WASHROOM/.test(h) && /TILE/.test(h) && /CUT/.test(h))          return 'WASHROOM TILES CUTTING';
+  if (/WASHROOM/.test(h) && /WALL/.test(h) && /TILE/.test(h))         return 'WASHROOM WALL TILES';
+  if (/WASHROOM/.test(h) && /CEIL/.test(h))                            return 'WASHROOM CEILING';
+  if (/WASHROOM/.test(h) && /FLOOR/.test(h))                           return 'WASHROOM FLOORING';
+  if (/KITCHEN/.test(h) && /TILE/.test(h))                             return 'KITCHEN TILES';
+  if (/TILE/.test(h)    && /FLOOR/.test(h))                            return 'TILE FLOORING WORK';
+  if (/PELM[EO]?N?T/.test(h))                                          return 'PELMENT WORK';
+  if (/POP/.test(h)     && /PLASTER/.test(h))                          return 'POP PLASTER WORK';
+  if (/GI/.test(h)      && (/ANGLE/.test(h) || /FRAME/.test(h)))      return 'GI ANGLE/FRAME MEMBER FIXING WORK';
+  if (/GYPSUM/.test(h)  && /PLASTER/.test(h))                          return 'GYPSUM PLASTER WORK';
+  return null;
+}
+
+// Interior execution — multi-tab workbook with 13+ contractor sheets per tower/floor range.
 // Header style varies (Area Name | UNIT NO | "]" | SIDE+Area Name | Floor+Area). Detection looks for
 // an explicit area-like column OR Interior-stage hint words (Levelling/Gypsum/POP Plaster/Tile Flooring).
 // Tower comes from row labels (T03/11 → T3). Contractor is inferred from tower + floor range based on
@@ -2246,17 +2271,16 @@ function parseInteriorExecution(md, contractorTag, defaultTower) {
         iAreaCol = 0; // fallback — first col holds the row label
       }
       stageIdxs = []; stageNames = [];
-      // Only track columns E:O (indices 4–14) and Y:Z (indices 24–25)
-      const INTERIOR_STAGE_COLS = new Set([4,5,6,7,8,9,10,11,12,13,14,24,25]);
+      // Track only the 13 canonical interior stages — matched by column header name,
+      // not column index, so it works regardless of each tab's physical layout.
       for (let k = 0; k < head.length; k++) {
         if (k === iAreaCol) continue;
-        if (!INTERIOR_STAGE_COLS.has(k)) continue;
         const h = head[k];
         if (!h) continue;
-        // Skip non-stage helper columns
-        if (/^SIDE$|^SNO$|^S\.?\s*NO\.?$|CONTRACTOR\s*NAME|^FLOOR$/.test(h)) continue;
+        const canonName = _matchesInteriorStage(h);
+        if (!canonName) continue;
         stageIdxs.push(k);
-        stageNames.push(h);
+        stageNames.push(canonName); // use canonical name so cards always show consistent labels
       }
       inBlock = true;
       continue;
