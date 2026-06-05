@@ -338,6 +338,13 @@ const LABOUR_FACADE_MONTHLY = [
   { yearMonth: '2026-05', fileId: '1mmjOcW8TTprShp1stzVpT6HnUkUWeJ0a0A8PC7R5ky4', tabSuffix: 'May'  },
   { yearMonth: '2026-06', fileId: '1EpjLagEaPW3tO6W2I_4lsZzQGBAZYF7Z1b6GTg_BhEE', tabSuffix: 'June' },
 ];
+// MEP daily/monthly archive workbooks (date-named tabs "DD-Month" + a "Master"
+// tab). Single-row header, so they are fetched with headers=1. Used for the
+// selected date (incl. today) and for the Monthly Report.
+const LABOUR_MEP_MONTHLY = [
+  { yearMonth: '2026-05', fileId: '12hGvr78Btg3NYlGe-e9-JOUOkMk6yF8xNa174NbYqiA', tabSuffix: 'May'  },
+  { yearMonth: '2026-06', fileId: '1GiEyEwQp2MImsc5daqmWVp5s1lgn5hdu7Qv8JVPZ0Y0', tabSuffix: 'June' },
+];
 const FACADE_FOLDER_ID = '1Aj406SB77Un-nQDZC1HaAVOLTRZp_yoC';
 const PLUMBING_FILES = [
   { contractor:'Pradeep',  scope:'T-01 + Clubhouse',     defaultTower:'T1', fileId:'1QQ1w7fXFr0_eMDtJrX68mpX8112myPsx4WqFHaMgttk' },
@@ -412,7 +419,8 @@ const DATA = {}; // cached parsed data per category
 let activeTab = 'tendering';
 let activeWorkSub = 'waterproof';
 let activeWorkStatus = 'done';
-let activeLabourSub = 'all';
+let activeLabourSub = 'interior';
+let activeInteriorCategory = 'all'; // Interior sub-tab: 'all' or a trade/category name (POP, TILE/STONE, …)
 let activeTenderStatus = 'pending';
 let activeTenderProject = 'all';  // Tendering: project sub-filter
 let activeWorkItem = 'all';     // Within a live work sub-tab: which Item/Contractor is selected
@@ -432,7 +440,8 @@ let activeKitchenSection = 'all';      // Commercial Kitchen: 'all' (every sheet
 let activeKitchenArea = 'all';         // Commercial Kitchen: Area filter (col B — e.g. "Main Kitchen (Stilt)")
 let activeKitchenSubArea = 'all';      // Commercial Kitchen: Sub-area filter (col C — Beverage/Cold/etc.)
 
-let activeLabourDate = '';  // 'YYYY-MM-DD' selected by date picker; '' = today/live
+let activeLabourDate = '';       // 'YYYY-MM-DD' selected by date picker; '' = today/live
+let activeLabourViewMode = 'daily'; // 'daily' | 'monthly' — monthly fetches Master tab
 
 let activePurchasableSub = 'kitchen';  // Purchasable Items tab: 'kitchen' or 'watcon'
 let activeWatconDept = 'dwg';          // Watcon sub-tab: 'dwg' | 'execution' | 'pumps'
@@ -593,11 +602,18 @@ async function fetchSheetTab(fileId, gid) {
 }
 
 // Fetch a sheet tab by its NAME (e.g. "28-May") instead of numeric GID.
-// Works for publicly-shared sheets — no API key needed.
-async function fetchSheetTabRawByName(fileId, sheetName) {
-  const url = `https://docs.google.com/spreadsheets/d/${fileId}/export?format=csv&sheet=${encodeURIComponent(sheetName)}`;
+// Uses the gviz/tq endpoint which reliably fetches by name for public sheets.
+// headers=2 merges the first two spreadsheet rows into the column headers so
+// contractor/contractor-name row values are preserved in the output.
+async function fetchSheetTabRawByName(fileId, sheetName, headerRows) {
+  // headerRows: how many top rows gviz folds into the column header.
+  //   Interior/Facade sheets have a 2-row header (title row + column row) → 2.
+  //   MEP sheets have a single header row → 1 (passing 2 would eat the first
+  //   data row, dropping a contractor and shifting all numbers).
+  const h = headerRows == null ? 2 : headerRows;
+  const url = `https://docs.google.com/spreadsheets/d/${fileId}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(sheetName)}&headers=${h}`;
   const r = await fetch(url, { credentials: 'omit' });
-  if (!r.ok) throw new Error(`HTTP ${r.status} fetching tab "${sheetName}" — ensure sheet is shared "Anyone with link → Viewer"`);
+  if (!r.ok) throw new Error(`HTTP ${r.status} fetching tab "${sheetName}" — ensure the sheet is shared "Anyone with link → Viewer"`);
   return await r.text();
 }
 
@@ -707,29 +723,15 @@ function parseTendering(md) {
   }).filter(r => r.scope || r.location); // drop blank rows
 }
 
-// Interior Labour: 9 trades × 10 contractors matrix + TOTAL/REQUIRED rows
-// Sheet structure (direct CSV fetch):
-//   Row 0: "DAILY MANPOWER REPORT" | date | (empty…)   ← merged title/date row
-//   Row 1: S.NO | CONTRACTOR'S NAME | HOI | VD | SH … ← real header with contractor names
-//   Row 2+: 1 | trade name | count | count …           ← data rows
-//   Row N: TOTAL | - | 173 | 8 …
-//   Row N+1: REQUIRED | - | 170 | 15 …
+// Interior Labour: trades × contractors matrix + TOTAL/REQUIRED rows.
+// Handles both standard pipe-table CSV (fetchSheet) and gviz CSV (fetchSheetTabRawByName
+// with headers=2) which produces combined column headers like "DAILY MANPOWER REPORT VD"
+// or "05/06/26 Purushottam" — these are stripped to extract the contractor name.
 function parseInteriorLabour(md) {
   const lines = splitTableRows(md);
   if (lines.length < 3) return { contractors: [], trades: [], reportDate: '' };
 
-  // Extract report date from title row (Row 0: "DAILY MANPOWER REPORT" | date | ...)
-  let reportDate = '';
-  const titleCells = parseRow(lines[0]);
-  for (const cell of titleCells) {
-    const t = (cell || '').trim();
-    if (t && /\d{1,2}[-\/]\w+/.test(t) && !/REPORT|MANPOWER/i.test(t)) {
-      reportDate = t; break;
-    }
-  }
-
-  // Find the real header row — the one whose col[0] looks like "S.NO" / "S NO"
-  // or whose col[1] contains "CONTRACTOR". Falls back to row 0.
+  // Find the real header row (col[1] contains "CONTRACTOR"). Falls back to row 0.
   let headerRowIdx = 0;
   for (let i = 0; i < Math.min(lines.length, 6); i++) {
     const c = parseRow(lines[i]);
@@ -741,18 +743,32 @@ function parseInteriorLabour(md) {
     }
   }
 
+  // Extract report date — look for a date pattern in the header/title row.
+  // gviz format embeds the date in a combined header cell (e.g. "05/06/26 Purushottam").
+  let reportDate = '';
+  const titleCells = parseRow(lines[0]);
+  for (const cell of titleCells) {
+    const t = (cell || '').trim();
+    if (!t || /REPORT|MANPOWER|REGALIA/i.test(t)) continue;
+    const dm = t.match(/\d{1,2}[\/\-]\d{1,2}[\/\-]?\d{0,4}/);
+    if (dm) { reportDate = dm[0]; break; }
+    if (/\d{1,2}[-\/]\w+/.test(t)) { reportDate = t; break; }
+  }
+
   const headers = parseRow(lines[headerRowIdx]);
-  // Contractor names are in cols 2 onwards. Strip any date-like prefixes
-  // (e.g. "22/05/26" → keep as-is if no slash gives a useful name, else
-  // take the last segment after the last slash).
+  // Strip title/date prefixes that gviz (headers=2) concatenates with contractor names:
+  //   "DAILY MANPOWER  REPORT VD"  → "VD"
+  //   "05/06/26 Purushottam "      → "Purushottam"
+  //   "Monthly chart APRS"         → "APRS"
+  //   "HOI" / "S. Dabra"           → unchanged
   const stripSection = (h) => {
-    const s = (h || '').trim();
+    let s = (h || '').trim();
     if (!s) return s;
-    const k = s.lastIndexOf('/');
-    if (k < 0) return s;
-    const after = s.slice(k + 1).trim();
-    // If the part after the slash is purely numeric (a date fragment), return the whole string
-    return /^\d+$/.test(after) ? s : after;
+    // Strip leading date patterns: "DD/MM/YY " or "DD/MM/YYYY "
+    s = s.replace(/^\d{1,2}\/\d{1,2}\/\d{2,4}\s+/, '').trim();
+    // Strip leading known title phrases
+    s = s.replace(/^(?:DAILY\s+MANPOWER\s+(?:REPORT\s+)?|HOMELAND\s+REGALIA\s+|MONTHLY\s+CHART\s+|MONTHLY\s+COUNT\s+)/i, '').trim();
+    return s || (h || '').trim();
   };
   const contractorNames = headers.slice(2).map(stripSection);
 
@@ -761,9 +777,11 @@ function parseInteriorLabour(md) {
   for (let i = headerRowIdx + 1; i < lines.length; i++) {
     const c = parseRow(lines[i]);
     const first = (c[0] || '').toUpperCase();
-    if (first.includes('TOTAL')) {
+    // gviz format: TOTAL/REQUIRED rows have empty labels — detect by empty col 0+1 with numbers
+    const isUnlabeled = !first && !((c[1] || '').trim()) && c.slice(2).some(v => parseInt(v) > 0);
+    if (first.includes('TOTAL') || (isUnlabeled && !totals)) {
       totals = c.slice(2).map(v => parseInt(v) || 0);
-    } else if (first.includes('REQUIRED')) {
+    } else if (first.includes('REQUIRED') || (isUnlabeled && totals && !required)) {
       required = c.slice(2).map(v => parseInt(v) || 0);
     } else if (c[1] && !isNaN(parseInt(c[0]))) {
       const tradeName = c[1].trim();
@@ -778,7 +796,8 @@ function parseInteriorLabour(md) {
       committed: required ? (required[ci] || 0) : 0,
       trades: trades.reduce((acc, t) => { acc[t.name] = t.byContractor[ci] || 0; return acc; }, {}),
     }))
-    .filter(c => c.name); // drop blank-name columns (empty trailing cells)
+    // Drop blank names and the "Category Wise" summary column present in Master tabs
+    .filter(c => c.name && !/^category\s*wise$/i.test(c.name));
   return { contractors, trades, reportDate };
 }
 
@@ -865,6 +884,15 @@ function parseFacadeLabour(md) {
     }
   }
   if (headerRowIdx < 0) return { vendors: [] };
+
+  // Live daily tabs (e.g. "5-Jun") carry no "Committed"/"Total" header TEXT —
+  // the columns are positional: VENDOR | Committed | Total. Without this fallback
+  // the parser can't locate them and reports every vendor as 0/0. Archive/Master
+  // tabs keep their explicit headers, so those indices (found above) take priority.
+  if (iVen >= 0) {
+    if (iCom < 0) iCom = iVen + 1;
+    if (iTot < 0) iTot = iVen + 2;
+  }
 
   // Also capture the report date from the title row if present (row before header)
   let reportDate = '';
@@ -5019,7 +5047,6 @@ function parseLabourIndex(csv) {
 
 // ─── LABOUR TAB ───────────────────────────────────────────
 const LABOUR_SUBS = [
-  { key:'all',        label:'All',        icon:'📊', live:true },
   { key:'interior',   label:'Interior',   icon:'🛋️', live:true },
   { key:'facade',     label:'Facade',     icon:'🏢', live:true },
   { key:'mechanical', label:'Mechanical', icon:'🔧', live:true },
@@ -5028,6 +5055,8 @@ const LABOUR_SUBS = [
   { key:'fire',       label:'Fire',       icon:'🔥', live:true },
 ];
 async function renderLabour() {
+  // Guard against a stale 'all' (removed sub-tab) saved in a previous session.
+  if (!LABOUR_SUBS.find(s => s.key === activeLabourSub)) activeLabourSub = 'interior';
   sessionStorage.setItem('activeLabourSub', activeLabourSub);
   const container = document.getElementById('tab-labour');
   const sub = LABOUR_SUBS.find(s => s.key === activeLabourSub);
@@ -5048,6 +5077,8 @@ async function renderLabour() {
   });
   try {
     let rows = [];
+    let interiorContractors = [];  // captured from the interior parse for category filtering
+    let interiorTrades = [];       // [{ name, byContractor, total }]
     let sources = [];
     // sourceFiles: parallel array tracking { label, fileId } for each loaded
     // data source so we can fetch and display last-edited times.
@@ -5074,6 +5105,7 @@ async function renderLabour() {
     const _allMonthlyYMs = new Set([
       ...LABOUR_INTERIOR_MONTHLY.map(e => e.yearMonth),
       ...LABOUR_FACADE_MONTHLY.map(e => e.yearMonth),
+      ...LABOUR_MEP_MONTHLY.map(e => e.yearMonth),
     ]);
     _allMonthlyYMs.forEach(yearMonth => {
       const [yr, mo] = yearMonth.split('-').map(Number);
@@ -5112,20 +5144,44 @@ async function renderLabour() {
     // ── Detect monthly archive for interior ────────────────────────────────
     // If the selected date falls in a LABOUR_INTERIOR_MONTHLY entry, fetch from
     // that workbook's date-named tab (e.g. "15-May") instead of the live sheet.
-    let _monthlyArchive = null; // interior archive { fileId, tabName }
-    let _monthlyFacadeArchive = null; // facade archive  { fileId, tabName }
-    if (!isToday && activeLabourDate) {
+    let _monthlyArchive = null;       // interior archive { fileId, tabName }
+    let _monthlyFacadeArchive = null; // facade archive   { fileId, tabName }
+    // Interior: always use tab-based fetch (incl. today) so the correct daily tab is loaded.
+    // FILES.interiorLabour IS the June workbook — fetching without GID gives the wrong first tab.
+    if (activeLabourDate) {
       for (const arch of LABOUR_INTERIOR_MONTHLY) {
         if (activeLabourDate.startsWith(arch.yearMonth)) {
-          const d = parseInt(activeLabourDate.slice(8));
-          _monthlyArchive = { fileId: arch.fileId, tabName: `${String(d).padStart(2,'0')}-${arch.tabSuffix}` };
+          const d  = parseInt(activeLabourDate.slice(8));
+          const tab = activeLabourViewMode === 'monthly' ? 'Master'
+                    : `${String(d).padStart(2,'0')}-${arch.tabSuffix}`;
+          _monthlyArchive = { fileId: arch.fileId, tabName: tab };
           break;
         }
       }
+    }
+    // Facade: only use archive for non-today dates (facade live file is separate)
+    if (!isToday && activeLabourDate) {
       for (const arch of LABOUR_FACADE_MONTHLY) {
         if (activeLabourDate.startsWith(arch.yearMonth)) {
-          const d = parseInt(activeLabourDate.slice(8));
-          _monthlyFacadeArchive = { fileId: arch.fileId, tabName: `${String(d).padStart(2,'0')}-${arch.tabSuffix}` };
+          const d  = parseInt(activeLabourDate.slice(8));
+          const tab = activeLabourViewMode === 'monthly' ? 'Master'
+                    : `${String(d).padStart(2,'0')}-${arch.tabSuffix}`;
+          _monthlyFacadeArchive = { fileId: arch.fileId, tabName: tab };
+          break;
+        }
+      }
+    }
+    // MEP: tab-based fetch for any date in an archived month (incl. today), and
+    // the "Master" tab for the Monthly Report — mirrors interior so MEP numbers
+    // track the selected date instead of always showing the live/today sheet.
+    let _monthlyMEPArchive = null; // MEP archive { fileId, tabName }
+    if (activeLabourDate) {
+      for (const arch of LABOUR_MEP_MONTHLY) {
+        if (activeLabourDate.startsWith(arch.yearMonth)) {
+          const d  = parseInt(activeLabourDate.slice(8));
+          const tab = activeLabourViewMode === 'monthly' ? 'Master'
+                    : `${String(d).padStart(2,'0')}-${arch.tabSuffix}`;
+          _monthlyMEPArchive = { fileId: arch.fileId, tabName: tab };
           break;
         }
       }
@@ -5150,6 +5206,8 @@ async function renderLabour() {
         sources.push('Interior Labour');
         sourceFiles.push({ label:'Interior', fileId: usedFileId });
         if (i.reportDate) reportDates.push({ label: 'Interior', date: i.reportDate });
+        interiorContractors = i.contractors;   // keep for the category filter
+        interiorTrades      = i.trades;         // [{ name, byContractor, total }]
         i.contractors.forEach(c => rows.push({ kind:'interior', vendor: c.name, activity: 'Interior — multi-trade', present: c.present, committed: c.committed, remarks: '' }));
       } catch(e) {
         fetchErrors.push({ label:'Interior Labour', fileId: _monthlyArchive?.fileId || resolvedIds.interior, msg: e.message });
@@ -5177,10 +5235,18 @@ async function renderLabour() {
     const MEP_SUBS = ['mechanical', 'plumbing', 'electrical', 'fire'];
     if (MEP_SUBS.includes(activeLabourSub) || activeLabourSub === 'all') {
       try {
-        const md  = await fetchSheet(resolvedIds.mep);
+        let md;
+        const usedMepFileId = _monthlyMEPArchive ? _monthlyMEPArchive.fileId : resolvedIds.mep;
+        if (_monthlyMEPArchive) {
+          // MEP archive tabs use a single header row → headers=1
+          const csv = await fetchSheetTabRawByName(_monthlyMEPArchive.fileId, _monthlyMEPArchive.tabName, 1);
+          md = csvToPipeRows(csv);
+        } else {
+          md = await fetchSheet(resolvedIds.mep);
+        }
         const mep = parseMEPLabour(md);
         sources.push('MEP Labour');
-        sourceFiles.push({ label:'MEP', fileId: resolvedIds.mep });
+        sourceFiles.push({ label:'MEP', fileId: usedMepFileId });
         if (mep._reportDate) reportDates.push({ label: 'MEP', date: mep._reportDate });
         const filtered = activeLabourSub === 'all'
           ? mep : mep.filter(r => mepTypeMatchesSub(r.type, activeLabourSub));
@@ -5190,7 +5256,7 @@ async function renderLabour() {
           present: v.present, committed: v.committed, remarks: '',
         }));
       } catch(e) {
-        fetchErrors.push({ label:'MEP Labour', fileId: resolvedIds.mep, msg: e.message });
+        fetchErrors.push({ label:'MEP Labour', fileId: _monthlyMEPArchive?.fileId || resolvedIds.mep, msg: e.message });
       }
     }
 
@@ -5222,7 +5288,7 @@ async function renderLabour() {
     const dateBannerHtml = `
       <div style="background:var(--card-bg);border:1px solid var(--card-border);border-radius:14px;padding:14px 16px;margin-bottom:16px">
 
-        ${/* ── 1. Month dropdown (top) ── */ availableMonths.length > 0 ? `
+        ${/* ── 1. Month dropdown + Monthly Report toggle (top) ── */ availableMonths.length > 0 ? `
         <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px">
           <span style="font-size:11px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:1px;white-space:nowrap">📆 Month</span>
           <select id="labour-month-select"
@@ -5236,6 +5302,15 @@ async function renderLabour() {
               return `<option value="${escapeHtml(ym)}" ${sel ? 'selected' : ''}>${escapeHtml(lbl)} (${cnt} days)</option>`;
             }).join('')}
           </select>
+          ${/* Monthly report toggle — only show when a month with an archive is selected */
+            (_monthlyArchive || _monthlyFacadeArchive || _monthlyMEPArchive) ? `
+          <button id="labour-monthly-toggle"
+            style="border:1px solid ${activeLabourViewMode==='monthly'?'#16a34a':'var(--card-border)'};
+                   background:${activeLabourViewMode==='monthly'?'#f0fdf4':'var(--sub-btn-bg)'};
+                   color:${activeLabourViewMode==='monthly'?'#16a34a':'var(--sub-btn-color)'};
+                   border-radius:8px;padding:6px 14px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;white-space:nowrap">
+            📊 Monthly Report
+          </button>` : ''}
         </div>` : ''}
 
         ${/* ── 2. Report date input + same-style Today / Backdate pills ── */ ''}
@@ -5290,25 +5365,73 @@ async function renderLabour() {
           </div>`).join('')}
         <div style="font-size:10px;color:#9ca3af;margin-top:6px">Fix: Open the sheet → Share → General access → <strong>Anyone with the link</strong> → Viewer → Done. Then reload.</div>
       </div>`;
+    // ── Interior category filter ───────────────────────────────────────────
+    // On the Interior sub-tab, the trade rows (POP, TILE/STONE, … STAFF) become
+    // clickable category chips. Selecting one shows each contractor's headcount
+    // for that single category instead of their multi-trade total.
+    const isInterior = activeLabourSub === 'interior';
+    if (isInterior && activeInteriorCategory !== 'all' && !interiorTrades.find(t => t.name === activeInteriorCategory)) {
+      activeInteriorCategory = 'all'; // selected category not present in this date's data
+    }
+    const catMode = isInterior && activeInteriorCategory !== 'all';
+    const interiorAllPresent = interiorContractors.reduce((s,c) => s + (c.present || 0), 0);
+    if (catMode) {
+      rows = interiorContractors
+        .map(c => ({ kind:'interior', vendor:c.name, activity:String(activeInteriorCategory).trim(),
+                     present: c.trades[activeInteriorCategory] || 0, committed: 0, remarks:'' }))
+        .filter(r => r.present > 0)
+        .sort((a,b) => b.present - a.present);
+    }
+    const catChipsHtml = isInterior ? `
+      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:14px">
+        <span style="font-size:11px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:1px;margin-right:2px">🗂 Category</span>
+        ${[{n:'all',l:'All Categories'}, ...interiorTrades.map(t => ({ n:t.name, l:String(t.name).trim() }))].map(c => {
+          const selc = activeInteriorCategory === c.n;
+          return `<button class="int-cat-btn" data-cat="${escapeHtml(c.n)}"
+            style="border:1px solid ${selc?'#2d5986':'var(--card-border)'};background:${selc?'#1e3a5f':'var(--sub-btn-bg)'};color:${selc?'#fff':'var(--sub-btn-color)'};border-radius:8px;padding:4px 12px;font-size:12px;font-weight:700;font-family:inherit;cursor:pointer">${escapeHtml(c.l)}</button>`;
+        }).join('')}
+      </div>` : '';
+
     const totalPresent = rows.reduce((s,r) => s + r.present, 0);
     const totalCommitted = rows.reduce((s,r) => s + r.committed, 0);
     const shortage = Math.max(totalCommitted - totalPresent, 0);
     const fullStrength = rows.filter(r => r.committed > 0 && r.present >= r.committed).length;
     const pct = totalCommitted ? Math.round(totalPresent/totalCommitted*100) : 0;
-    const kpiHtml = `<div class="kpis">
+    const kpiHtml = catMode ? `<div class="kpis">
+      <div class="kpi" style="background:#f0fdf4;border-color:#86efac"><div class="kpi-icon">👷</div><div class="kpi-num" style="color:#22c55e">${totalPresent}</div><div class="kpi-label">${escapeHtml(String(activeInteriorCategory).trim())} Present</div></div>
+      <div class="kpi" style="background:#eff6ff;border-color:#93c5fd"><div class="kpi-icon">🏗️</div><div class="kpi-num" style="color:#3b82f6">${rows.length}</div><div class="kpi-label">Contractors Active</div></div>
+      <div class="kpi" style="background:#fffbeb;border-color:#fcd34d"><div class="kpi-icon">📊</div><div class="kpi-num" style="color:#f59e0b">${interiorAllPresent}</div><div class="kpi-label">All Interior Present</div></div>
+      <div class="kpi" style="background:#f5f3ff;border-color:#c4b5fd"><div class="kpi-icon">📈</div><div class="kpi-num" style="color:#7c3aed">${interiorAllPresent?Math.round(totalPresent/interiorAllPresent*100):0}%</div><div class="kpi-label">Share of Interior</div></div>
+    </div>` : `<div class="kpis">
       <div class="kpi" style="background:#eff6ff;border-color:#93c5fd"><div class="kpi-icon">📋</div><div class="kpi-num" style="color:#3b82f6">${totalCommitted}</div><div class="kpi-label">Committed</div></div>
       <div class="kpi" style="background:#f0fdf4;border-color:#86efac"><div class="kpi-icon">👷</div><div class="kpi-num" style="color:#22c55e">${totalPresent}</div><div class="kpi-label">Present</div></div>
       <div class="kpi" style="background:#fef2f2;border-color:#fca5a5"><div class="kpi-icon">⚠️</div><div class="kpi-num" style="color:#ef4444">${shortage}</div><div class="kpi-label">Shortage</div></div>
       <div class="kpi" style="background:#fffbeb;border-color:#fcd34d"><div class="kpi-icon">✅</div><div class="kpi-num" style="color:#f59e0b">${fullStrength}/${rows.length}</div><div class="kpi-label">Full Strength</div></div>
     </div>`;
-    const summaryHtml = `<div style="background:#fff;border-radius:13px;padding:14px 18px;margin-bottom:16px;border:1px solid #e2e8f0">
+    const summaryHtml = catMode ? `<div style="background:#fff;border-radius:13px;padding:14px 18px;margin-bottom:16px;border:1px solid #e2e8f0">
+      <span style="font-weight:700;font-size:13px;color:#1e3a5f">🛋️ ${escapeHtml(String(activeInteriorCategory).trim())} — ${totalPresent} present across ${rows.length} contractor${rows.length===1?'':'s'}</span>
+    </div>` : `<div style="background:#fff;border-radius:13px;padding:14px 18px;margin-bottom:16px;border:1px solid #e2e8f0">
       <div style="display:flex;justify-content:space-between;margin-bottom:8px">
         <span style="font-weight:700;font-size:13px;color:#1e3a5f">${sub.icon} ${escapeHtml(sub.label)} — Site Strength</span>
         <span style="font-size:12px;color:#6b7280">${totalPresent} of ${totalCommitted} present (${pct}%)</span>
       </div>
       <div class="bar-row"><div class="bar-outer"><div class="bar-inner" style="width:${Math.min(pct,100)}%;background:${pct<100?'#ef4444':'#22c55e'}"></div></div><span class="bar-pct" style="color:${pct<100?'#ef4444':'#16a34a'}">${pct}%</span></div>
     </div>`;
-    const tableHtml = rows.length === 0
+    const tableHtml = catMode
+      ? (rows.length === 0
+          ? `<div class="empty">No ${escapeHtml(String(activeInteriorCategory).trim())} workers recorded for this date.</div>`
+          : `<table><thead><tr><th>#</th><th>Contractor</th><th>Category</th><th style="text-align:center">Present</th><th style="min-width:140px">Share of category</th></tr></thead><tbody>${
+            rows.map((r,i) => {
+              const sp = totalPresent ? Math.round(r.present/totalPresent*100) : 0;
+              return `<tr>
+                <td>${i+1}</td>
+                <td class="loc">${escapeHtml(r.vendor)}</td>
+                <td style="font-size:12px;color:#6b7280">${escapeHtml(r.activity)}</td>
+                <td style="text-align:center;font-weight:700;color:#16a34a">${r.present}</td>
+                <td><div class="bar-row"><div class="bar-outer"><div class="bar-inner" style="width:${sp}%;background:#3b82f6"></div></div><span class="bar-pct" style="color:#3b82f6">${sp}%</span></div></td>
+              </tr>`;
+            }).join('')}</tbody></table>`)
+      : rows.length === 0
       ? `<div class="empty">No labour data for this section.</div>`
       : `<table><thead><tr><th>#</th><th>Contractor</th><th>Activity</th><th style="text-align:center">Committed</th><th style="text-align:center">Present</th><th style="text-align:center">Short</th><th style="min-width:120px">Strength</th></tr></thead><tbody>${
         rows.map((r,i) => {
@@ -5334,18 +5457,23 @@ async function renderLabour() {
       ${dateBannerHtml}
       ${errBanner}
       ${lastEditPlaceholder}
+      ${catChipsHtml}
       ${kpiHtml}
       ${summaryHtml}
       <div class="tbl-wrap">
         <div class="tbl-head" style="background:#f0f7ff;border-bottom:1px solid #bfdbfe">
           <span>${sub.icon}</span>
-          <span class="tbl-title" style="color:#1e3a5f">${escapeHtml(sub.label)} — Manpower Deployment · ${!isToday ? `<span style="color:#b45309">${escapeHtml(activeLabourDate)}</span>` : 'Today'}</span>
+          <span class="tbl-title" style="color:#1e3a5f">${escapeHtml(sub.label)} — ${activeLabourViewMode==='monthly'?`Monthly Report · <span style="color:#16a34a">${new Date(+selectedMonth.slice(0,4),+selectedMonth.slice(5,7)-1,1).toLocaleString('en-IN',{month:'long',year:'numeric'})}</span>`:`Manpower Deployment · ${!isToday?`<span style="color:#b45309">${escapeHtml(activeLabourDate)}</span>`:'Today'}`}</span>
           <span class="tbl-count" style="background:#2d5986">${rows.length} contractors</span>
         </div>
         ${tableHtml}
       </div>`;
     container.querySelectorAll('.sub-btn').forEach(b => {
       b.addEventListener('click', () => { activeLabourSub = b.dataset.key; renderLabour(); });
+    });
+    // Interior category chips
+    container.querySelectorAll('.int-cat-btn').forEach(b => {
+      b.addEventListener('click', () => { activeInteriorCategory = b.dataset.cat; renderLabour(); });
     });
     const datePicker = container.querySelector('#labour-date-picker');
     if (datePicker) datePicker.addEventListener('change', () => { activeLabourDate = datePicker.value || ''; renderLabour(); });
@@ -5362,10 +5490,18 @@ async function renderLabour() {
         renderLabour();
       });
     }
-    // Day buttons: jump directly to that specific date
+    // Day buttons: jump directly to that specific date (always switches to daily mode)
     container.querySelectorAll('.labour-day-btn').forEach(b => {
-      b.addEventListener('click', () => { activeLabourDate = b.dataset.date; renderLabour(); });
+      b.addEventListener('click', () => { activeLabourDate = b.dataset.date; activeLabourViewMode = 'daily'; renderLabour(); });
     });
+    // Monthly report toggle
+    const monthlyToggle = container.querySelector('#labour-monthly-toggle');
+    if (monthlyToggle) {
+      monthlyToggle.addEventListener('click', () => {
+        activeLabourViewMode = activeLabourViewMode === 'monthly' ? 'daily' : 'monthly';
+        renderLabour();
+      });
+    }
   } catch (e) {
     container.innerHTML = `<div class="eyebrow">${sub.icon} ${escapeHtml(sub.label)} Manpower Report</div>${subnav}<div class="error"><strong>Failed to load:</strong> ${escapeHtml(e?.message || String(e))}</div>`;
     container.querySelectorAll('.sub-btn').forEach(b => {
