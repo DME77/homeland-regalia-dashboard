@@ -3666,6 +3666,7 @@ async function renderWork() {
     // ── Glass Railing stage sub-filter (Granite Done → Channel → Railing/Glass) ──
     // Must run before counts/filtered so status cards reflect the stage-filtered set.
     let glassStageNav = '';
+    let glassStageBaseItems = null; // items before the stage chip narrows them (for the % summary denominators)
     if (activeWorkItem === 'Glass Railing' && items.some(r => r.stageBreakdown)) {
       const GRANITE_NAMES = ['Granite (Front/Oval)', 'Granite (Rear/Kothi)'];
       const grAny  = r => r.stageBreakdown && GRANITE_NAMES.some(n => r.stageBreakdown.find(s => s.shortName === n));
@@ -3688,6 +3689,7 @@ async function renderWork() {
           ${gsBtn('channel-done', '📦', 'Channel Done',       cntChannel)}
           ${gsBtn('railing-done', '🪟', 'Railing/Glass Done', cntRailing)}
         </div>`;
+      glassStageBaseItems = items.slice(); // snapshot all flats before the stage chip filters them
       if (activeGlassStage === 'granite-done') {
         items = items.filter(r => grAny(r) && grDone(r));
         breadcrumb += ' · Granite Done';
@@ -3718,7 +3720,7 @@ async function renderWork() {
     const showWorkTypeCol = isSqftMode && [...new Set(display.map(r => r.workType))].length > 1;
 
     // ── Per-stage % summary — only when a specific item is selected (not All Items) ──
-    const chipItems = (isSqftMode || activeWorkItem === 'all') ? [] : items.filter(r => r.stageBreakdown);
+    const chipItems = (isSqftMode || activeWorkItem === 'all') ? [] : (glassStageBaseItems || items).filter(r => r.stageBreakdown);
     let stagePctSummaryHtml = '';
     if (chipItems.length > 0) {
       const stageNames = [];
