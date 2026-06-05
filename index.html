@@ -325,6 +325,13 @@ const FILES = {
   // Leave empty until the index sheet is created and shared publicly.
   labourIndex:    '',
 };
+
+// Monthly interior labour archive workbooks.
+// Each entry maps a year-month to a Google Sheet that has date-named tabs ("DD-Mon" format).
+// Add a new entry each month when you create the monthly DLR workbook.
+const LABOUR_INTERIOR_MONTHLY = [
+  { yearMonth: '2026-05', fileId: '1FvInWQZVxmqBjrfVH3QXZrz9KlACnW-H70t7OlQ39mo' },
+];
 const FACADE_FOLDER_ID = '1Aj406SB77Un-nQDZC1HaAVOLTRZp_yoC';
 const PLUMBING_FILES = [
   { contractor:'Pradeep',  scope:'T-01 + Clubhouse',     defaultTower:'T1', fileId:'1QQ1w7fXFr0_eMDtJrX68mpX8112myPsx4WqFHaMgttk' },
@@ -577,6 +584,15 @@ async function fetchSheetTab(fileId, gid) {
   }
   const csv = await r.text();
   return csvToPipeRows(csv);
+}
+
+// Fetch a sheet tab by its NAME (e.g. "28-May") instead of numeric GID.
+// Works for publicly-shared sheets — no API key needed.
+async function fetchSheetTabRawByName(fileId, sheetName) {
+  const url = `https://docs.google.com/spreadsheets/d/${fileId}/export?format=csv&sheet=${encodeURIComponent(sheetName)}`;
+  const r = await fetch(url, { credentials: 'omit' });
+  if (!r.ok) throw new Error(`HTTP ${r.status} fetching tab "${sheetName}" — ensure sheet is shared "Anyone with link → Viewer"`);
+  return await r.text();
 }
 
 // Raw-CSV variants for parsers that need comma-separated input (not pipe-table).
@@ -5047,21 +5063,58 @@ async function renderLabour() {
     }
     const indexEntries = window._labourIndexCache || [];
 
+    // ── Augment with days from LABOUR_INTERIOR_MONTHLY archives ───────────
+    // Populates all days of each configured month so they appear in the picker.
+    const allIndexEntries = [...indexEntries];
+    LABOUR_INTERIOR_MONTHLY.forEach(({ yearMonth }) => {
+      const [yr, mo] = yearMonth.split('-').map(Number);
+      const totalDays = new Date(yr, mo, 0).getDate();
+      const monAbbr   = new Date(yr, mo-1, 1).toLocaleString('en-US', { month: 'short' }); // "May"
+      for (let d = 1; d <= totalDays; d++) {
+        const iso = `${yr}-${String(mo).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+        if (!allIndexEntries.find(e => e.dateISO === iso)) {
+          allIndexEntries.push({
+            dateISO: iso,
+            dateStr: `${String(d).padStart(2,'0')}-${monAbbr}`,
+            dateObj: new Date(yr, mo-1, d),
+            interior: '', facade: '', mep: '',
+          });
+        }
+      }
+    });
+    allIndexEntries.sort((a,b) => b.dateObj - a.dateObj);
+
     // ── Date resolution ────────────────────────────────────────────────────
     const todayDate = new Date();
     const todayStr  = `${todayDate.getFullYear()}-${String(todayDate.getMonth()+1).padStart(2,'0')}-${String(todayDate.getDate()).padStart(2,'0')}`;
     if (!activeLabourDate) activeLabourDate = todayStr;
     const isToday = activeLabourDate === todayStr;
 
-    // Find index entry for the selected date (null if today or not in index)
+    // Find index entry for the selected date
     const selectedEntry = !isToday ? indexEntries.find(e => e.dateISO === activeLabourDate) : null;
 
-    // Resolve file IDs: use index entry's IDs for historical dates, live IDs for today
+    // Resolve file IDs for facade/MEP (from labourIndex or live)
     const resolvedIds = {
       interior: (selectedEntry?.interior) || FILES.interiorLabour,
       facade:   (selectedEntry?.facade)   || FILES.facadeLabour,
       mep:      (selectedEntry?.mep)      || FILES.mepLabour,
     };
+
+    // ── Detect monthly archive for interior ────────────────────────────────
+    // If the selected date falls in a LABOUR_INTERIOR_MONTHLY entry, fetch from
+    // that workbook's date-named tab (e.g. "15-May") instead of the live sheet.
+    let _monthlyArchive = null; // { fileId, tabName }
+    if (!isToday && activeLabourDate) {
+      for (const arch of LABOUR_INTERIOR_MONTHLY) {
+        if (activeLabourDate.startsWith(arch.yearMonth)) {
+          const d       = parseInt(activeLabourDate.slice(8));
+          const monAbbr = new Date(+arch.yearMonth.slice(0,4), +arch.yearMonth.slice(5,7)-1, 1)
+                            .toLocaleString('en-US', { month: 'short' });
+          _monthlyArchive = { fileId: arch.fileId, tabName: `${String(d).padStart(2,'0')}-${monAbbr}` };
+          break;
+        }
+      }
+    }
 
     // ── Fetch data using resolved file IDs ─────────────────────────────────
     // For historical dates we fetch directly (bypassing DATA cache which holds live data)
@@ -5069,14 +5122,22 @@ async function renderLabour() {
 
     if (activeLabourSub === 'interior' || activeLabourSub === 'all') {
       try {
-        const md = await fetchSheet(resolvedIds.interior);
+        let md;
+        const usedFileId = _monthlyArchive ? _monthlyArchive.fileId : resolvedIds.interior;
+        if (_monthlyArchive) {
+          // Fetch tab by name from the monthly archive workbook (e.g. "15-May")
+          const csv = await fetchSheetTabRawByName(_monthlyArchive.fileId, _monthlyArchive.tabName);
+          md = csvToPipeRows(csv);
+        } else {
+          md = await fetchSheet(resolvedIds.interior);
+        }
         const i  = parseInteriorLabour(md);
         sources.push('Interior Labour');
-        sourceFiles.push({ label:'Interior', fileId: resolvedIds.interior });
+        sourceFiles.push({ label:'Interior', fileId: usedFileId });
         if (i.reportDate) reportDates.push({ label: 'Interior', date: i.reportDate });
         i.contractors.forEach(c => rows.push({ kind:'interior', vendor: c.name, activity: 'Interior — multi-trade', present: c.present, committed: c.committed, remarks: '' }));
       } catch(e) {
-        fetchErrors.push({ label:'Interior Labour', fileId: resolvedIds.interior, msg: e.message });
+        fetchErrors.push({ label:'Interior Labour', fileId: _monthlyArchive?.fileId || resolvedIds.interior, msg: e.message });
       }
     }
     if (activeLabourSub === 'facade' || activeLabourSub === 'all') {
@@ -5114,21 +5175,21 @@ async function renderLabour() {
     // ── Build date picker UI ───────────────────────────────────────────────
     // Available months: from the index (only months with real DPR sheets).
     // If no index yet, show no month buttons (just the date picker + today).
-    const availableMonths = [...new Set(indexEntries.map(e => e.dateISO.slice(0,7)))]
+    const availableMonths = [...new Set(allIndexEntries.map(e => e.dateISO.slice(0,7)))]
       .sort((a,b) => b.localeCompare(a)); // newest first
 
     // All available dates for min/max on the date input
-    const availableDates = indexEntries.map(e => e.dateISO);
+    const availableDates = allIndexEntries.map(e => e.dateISO);
     const minDate = availableDates.length ? availableDates[availableDates.length-1] : '';
     const maxDate = todayStr;
 
-    // Days within the selected month that have index entries (for day-level navigation)
+    // Days within the selected month
     const selectedMonth = activeLabourDate.slice(0,7);
-    const daysInMonth   = indexEntries
+    const daysInMonth   = allIndexEntries
       .filter(e => e.dateISO.startsWith(selectedMonth))
       .sort((a,b) => a.dateISO.localeCompare(b.dateISO));
 
-    const indexConfigured = !!FILES.labourIndex;
+    const indexConfigured = !!(FILES.labourIndex || LABOUR_INTERIOR_MONTHLY.length);
     const detectedDateStr = reportDates.length > 0
       ? reportDates.map(r => `${r.label}: <b>${escapeHtml(r.date)}</b>`).join(' · ')
       : isToday ? '<span style="color:#94a3b8">today\'s live data</span>' : '<span style="color:#f59e0b">date not in index</span>';
@@ -5157,7 +5218,7 @@ async function renderLabour() {
             const [yr, mo] = ym.split('-');
             const lbl = new Date(+yr, +mo-1, 1).toLocaleString('en-IN', { month: 'short', year: 'numeric' });
             const sel = selectedMonth === ym && !isToday;
-            const cnt = indexEntries.filter(e => e.dateISO.startsWith(ym)).length;
+            const cnt = allIndexEntries.filter(e => e.dateISO.startsWith(ym)).length;
             return `<button class="labour-month-btn" data-month="${escapeHtml(ym)}"
               style="border:1px solid ${sel?'#2d5986':'var(--card-border)'};background:${sel?'#1e3a5f':'var(--sub-btn-bg)'};color:${sel?'#fff':'var(--sub-btn-color)'};border-radius:8px;padding:4px 12px;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit">
               ${escapeHtml(lbl)} <span style="font-size:9px;opacity:0.75">(${cnt}d)</span>
@@ -5181,7 +5242,7 @@ async function renderLabour() {
         <div style="font-size:11px;color:#94a3b8;margin-top:4px;border-top:1px solid var(--card-border);padding-top:8px">
           🗂 Report date from sheet: ${detectedDateStr}
           ${!indexConfigured ? `&nbsp;·&nbsp;<span style="color:#b45309;font-weight:600">Set <code>FILES.labourIndex</code> to enable historical reports</span>` : ''}
-          ${indexConfigured && !isToday && !selectedEntry ? `&nbsp;·&nbsp;<span style="color:#f59e0b">No index entry for this date — showing live data</span>` : ''}
+          ${indexConfigured && !isToday && !selectedEntry && !_monthlyArchive ? `&nbsp;·&nbsp;<span style="color:#f59e0b">No index entry for this date — showing live data</span>` : ''}
         </div>
       </div>`;
 
@@ -5267,7 +5328,7 @@ async function renderLabour() {
         const ym = b.dataset.month;
         if (ym === todayStr.slice(0,7)) { activeLabourDate = ''; renderLabour(); return; }
         // Pick the most recent day available in this month from the index
-        const days = indexEntries.filter(e => e.dateISO.startsWith(ym)).sort((a,z) => z.dateISO.localeCompare(a.dateISO));
+        const days = allIndexEntries.filter(e => e.dateISO.startsWith(ym)).sort((a,z) => z.dateISO.localeCompare(a.dateISO));
         activeLabourDate = days.length ? days[0].dateISO : ym + '-01';
         renderLabour();
       });
