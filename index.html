@@ -5195,22 +5195,15 @@ async function renderLabour() {
       ? reportDates.map(r => `${r.label}: <b>${escapeHtml(r.date)}</b>`).join(' · ')
       : isToday ? '<span style="color:#94a3b8">today\'s live data</span>' : '<span style="color:#f59e0b">date not in index</span>';
 
+    // Shared pill style used for both Today and Backdate indicators
+    const _pillStyle = 'font-size:12px;font-weight:700;border-radius:8px;padding:5px 14px;border:1px solid #2d5986;background:#1e3a5f;color:#fff;cursor:pointer;font-family:inherit';
+
     const dateBannerHtml = `
       <div style="background:var(--card-bg);border:1px solid var(--card-border);border-radius:14px;padding:14px 16px;margin-bottom:16px">
-        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">
-          <span style="font-size:11px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:1.2px">📅 Report Date</span>
-          <input type="date" id="labour-date-picker" value="${escapeHtml(activeLabourDate)}"
-            ${minDate ? `min="${escapeHtml(minDate)}"` : ''} max="${escapeHtml(maxDate)}"
-            style="border:1px solid var(--card-border);border-radius:8px;padding:5px 10px;font-size:13px;font-family:inherit;background:var(--card-bg);color:var(--body-color);cursor:pointer;font-weight:600">
-          ${!isToday
-            ? `<button id="labour-today-btn" style="border:1px solid #93c5fd;background:#eff6ff;color:#1d4ed8;border-radius:8px;padding:5px 14px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">↩ Today</button>
-               <span style="font-size:11px;color:#b45309;font-weight:600;background:#fef3c7;border-radius:6px;padding:3px 10px">📋 Backdate — ${escapeHtml(activeLabourDate)}</span>`
-            : `<span style="font-size:11px;color:#16a34a;font-weight:700;background:#dcfce7;border-radius:6px;padding:3px 10px">🟢 Live — Today</span>`}
-        </div>
 
-        ${availableMonths.length > 0 ? `
-        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">
-          <span style="font-size:11px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:1px;white-space:nowrap">📆 Select Month</span>
+        ${/* ── 1. Month dropdown (top) ── */ availableMonths.length > 0 ? `
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px">
+          <span style="font-size:11px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:1px;white-space:nowrap">📆 Month</span>
           <select id="labour-month-select"
             style="border:1px solid var(--card-border);border-radius:8px;padding:6px 12px;font-size:13px;font-family:inherit;background:var(--card-bg);color:var(--body-color);cursor:pointer;font-weight:600;min-width:180px">
             <option value="">Today — Live Data</option>
@@ -5224,23 +5217,40 @@ async function renderLabour() {
           </select>
         </div>` : ''}
 
-        ${daysInMonth.length > 0 ? `
-        <div style="font-size:10px;font-weight:700;color:#94a3b8;letter-spacing:1px;text-transform:uppercase;margin-bottom:6px">Select Day — ${new Date(+selectedMonth.slice(0,4), +selectedMonth.slice(5,7)-1, 1).toLocaleString('en-IN',{month:'long',year:'numeric'})}</div>
+        ${/* ── 2. Report date input + same-style Today / Backdate pills ── */ ''}
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:${daysInMonth.length > 0 ? '10px' : '4px'}">
+          <span style="font-size:11px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:1.2px">📅 Report Date</span>
+          <input type="date" id="labour-date-picker" value="${escapeHtml(activeLabourDate)}"
+            ${minDate ? `min="${escapeHtml(minDate)}"` : ''} max="${escapeHtml(maxDate)}"
+            style="border:1px solid var(--card-border);border-radius:8px;padding:5px 10px;font-size:13px;font-family:inherit;background:var(--card-bg);color:var(--body-color);cursor:pointer;font-weight:600">
+          ${!isToday
+            ? `<button id="labour-today-btn" style="${_pillStyle}">↩ Today</button>
+               <span style="${_pillStyle.replace('cursor:pointer;','')}">📋 ${escapeHtml(activeLabourDate)}</span>`
+            : `<span style="${_pillStyle.replace('cursor:pointer;','')}">🟢 Today</span>`}
+        </div>
+
+        ${/* ── 3. Day buttons — grayed for future, no "Select Day" header ── */
+          daysInMonth.length > 0 ? `
         <div style="display:flex;flex-wrap:wrap;gap:5px;margin-bottom:10px">
           ${daysInMonth.map(e => {
-            const day = +e.dateISO.slice(8);
-            const sel = e.dateISO === activeLabourDate;
+            const day    = +e.dateISO.slice(8);
+            const sel    = e.dateISO === activeLabourDate;
+            const future = e.dateISO > todayStr;
+            const border = sel ? '#2d5986' : 'var(--card-border)';
+            const bg     = sel ? '#1e3a5f' : 'var(--sub-btn-bg)';
+            const clr    = sel ? '#fff'    : 'var(--sub-btn-color)';
+            const extra  = future ? 'opacity:0.35;cursor:not-allowed;pointer-events:none;' : 'cursor:pointer;';
             return `<button class="labour-day-btn" data-date="${escapeHtml(e.dateISO)}"
-              style="border:1px solid ${sel?'#2d5986':'var(--card-border)'};background:${sel?'#1e3a5f':'var(--sub-btn-bg)'};color:${sel?'#fff':'var(--sub-btn-color)'};border-radius:8px;padding:4px 10px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;min-width:38px;text-align:center">
+              ${future ? 'disabled' : ''}
+              style="border:1px solid ${border};background:${bg};color:${clr};border-radius:8px;padding:4px 10px;font-size:12px;font-weight:700;font-family:inherit;min-width:38px;text-align:center;${extra}">
               ${day}
             </button>`;
           }).join('')}
-        </div>` : !isToday && availableMonths.length > 0 ? `<div style="font-size:11px;color:#f59e0b;padding:4px 0 6px">⚠️ No DPR entries found for ${escapeHtml(selectedMonth)} in the index.</div>` : ''}
+        </div>` : ''}
 
         <div style="font-size:11px;color:#94a3b8;margin-top:4px;border-top:1px solid var(--card-border);padding-top:8px">
-          🗂 Report date from sheet: ${detectedDateStr}
-          ${!indexConfigured ? `&nbsp;·&nbsp;<span style="color:#b45309;font-weight:600">Set <code>FILES.labourIndex</code> to enable historical reports</span>` : ''}
-          ${indexConfigured && !isToday && !selectedEntry && !_monthlyArchive ? `&nbsp;·&nbsp;<span style="color:#f59e0b">No index entry for this date — showing live data</span>` : ''}
+          🗂 Sheet date: ${detectedDateStr}
+          ${indexConfigured && !isToday && !selectedEntry && !_monthlyArchive ? `&nbsp;·&nbsp;<span style="color:#f59e0b">No index entry — showing live data</span>` : ''}
         </div>
       </div>`;
 
