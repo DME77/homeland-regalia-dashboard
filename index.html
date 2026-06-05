@@ -1435,12 +1435,12 @@ function parseGlassRailingTab(csv, towerLabel) {
 
 async function loadGlassRailingExecution(fileId) {
   const tabs = [
-    { gid: 0,          tower: 'T1' },
-    { gid: 1940149409, tower: 'T2' },
-    { gid: 645251445,  tower: 'T3' },
-    { gid: 1211789135, tower: 'T4' },
-    { gid: 553356579,  tower: 'T5' },
-    { gid: 1999718682, tower: 'T6' },
+    { gid: 1555245672, tower: 'T1' },
+    { gid: 2064988852, tower: 'T2' },
+    { gid: 0,          tower: 'T3' },
+    { gid: 1071972845, tower: 'T4' },
+    { gid: 1398858090, tower: 'T5' },
+    { gid: 451912310,  tower: 'T6' },
   ];
   const results = await Promise.all(tabs.map(async ({ gid, tower }) => {
     try { return parseGlassRailingTab(await fetchSheetTabRaw(fileId, gid), tower); }
