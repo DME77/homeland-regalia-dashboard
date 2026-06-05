@@ -329,8 +329,10 @@ const FILES = {
 // Monthly interior labour archive workbooks.
 // Each entry maps a year-month to a Google Sheet that has date-named tabs ("DD-Mon" format).
 // Add a new entry each month when you create the monthly DLR workbook.
+// tabSuffix = the exact suffix used in tab names, e.g. "May" → "28-May", "June" → "05-June"
 const LABOUR_INTERIOR_MONTHLY = [
-  { yearMonth: '2026-05', fileId: '1FvInWQZVxmqBjrfVH3QXZrz9KlACnW-H70t7OlQ39mo' },
+  { yearMonth: '2026-05', fileId: '1FvInWQZVxmqBjrfVH3QXZrz9KlACnW-H70t7OlQ39mo', tabSuffix: 'May'  },
+  { yearMonth: '2026-06', fileId: '1cqc7M8OjL_23iGk4nUNyNf4GLkxUbimb9PZoOGn-6MI',  tabSuffix: 'June' },
 ];
 const FACADE_FOLDER_ID = '1Aj406SB77Un-nQDZC1HaAVOLTRZp_yoC';
 const PLUMBING_FILES = [
@@ -5107,10 +5109,9 @@ async function renderLabour() {
     if (!isToday && activeLabourDate) {
       for (const arch of LABOUR_INTERIOR_MONTHLY) {
         if (activeLabourDate.startsWith(arch.yearMonth)) {
-          const d       = parseInt(activeLabourDate.slice(8));
-          const monAbbr = new Date(+arch.yearMonth.slice(0,4), +arch.yearMonth.slice(5,7)-1, 1)
-                            .toLocaleString('en-US', { month: 'short' });
-          _monthlyArchive = { fileId: arch.fileId, tabName: `${String(d).padStart(2,'0')}-${monAbbr}` };
+          const d = parseInt(activeLabourDate.slice(8));
+          // Use arch.tabSuffix exactly as configured ("May" → "28-May", "June" → "05-June")
+          _monthlyArchive = { fileId: arch.fileId, tabName: `${String(d).padStart(2,'0')}-${arch.tabSuffix}` };
           break;
         }
       }
@@ -5208,22 +5209,19 @@ async function renderLabour() {
         </div>
 
         ${availableMonths.length > 0 ? `
-        <div style="font-size:10px;font-weight:700;color:#94a3b8;letter-spacing:1px;text-transform:uppercase;margin-bottom:6px">Select Month</div>
-        <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">
-          <button class="labour-month-btn" data-month="${todayStr.slice(0,7)}"
-            style="border:1px solid ${selectedMonth===todayStr.slice(0,7)?'#2d5986':'var(--card-border)'};background:${selectedMonth===todayStr.slice(0,7)?'#1e3a5f':'var(--sub-btn-bg)'};color:${selectedMonth===todayStr.slice(0,7)?'#fff':'var(--sub-btn-color)'};border-radius:8px;padding:4px 12px;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit">
-            Today
-          </button>
-          ${availableMonths.map(ym => {
-            const [yr, mo] = ym.split('-');
-            const lbl = new Date(+yr, +mo-1, 1).toLocaleString('en-IN', { month: 'short', year: 'numeric' });
-            const sel = selectedMonth === ym && !isToday;
-            const cnt = allIndexEntries.filter(e => e.dateISO.startsWith(ym)).length;
-            return `<button class="labour-month-btn" data-month="${escapeHtml(ym)}"
-              style="border:1px solid ${sel?'#2d5986':'var(--card-border)'};background:${sel?'#1e3a5f':'var(--sub-btn-bg)'};color:${sel?'#fff':'var(--sub-btn-color)'};border-radius:8px;padding:4px 12px;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit">
-              ${escapeHtml(lbl)} <span style="font-size:9px;opacity:0.75">(${cnt}d)</span>
-            </button>`;
-          }).join('')}
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">
+          <span style="font-size:11px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:1px;white-space:nowrap">📆 Select Month</span>
+          <select id="labour-month-select"
+            style="border:1px solid var(--card-border);border-radius:8px;padding:6px 12px;font-size:13px;font-family:inherit;background:var(--card-bg);color:var(--body-color);cursor:pointer;font-weight:600;min-width:180px">
+            <option value="">Today — Live Data</option>
+            ${availableMonths.map(ym => {
+              const [yr, mo] = ym.split('-');
+              const lbl = new Date(+yr, +mo-1, 1).toLocaleString('en-IN', { month: 'long', year: 'numeric' });
+              const cnt = allIndexEntries.filter(e => e.dateISO.startsWith(ym)).length;
+              const sel = selectedMonth === ym && !isToday;
+              return `<option value="${escapeHtml(ym)}" ${sel ? 'selected' : ''}>${escapeHtml(lbl)} (${cnt} days)</option>`;
+            }).join('')}
+          </select>
         </div>` : ''}
 
         ${daysInMonth.length > 0 ? `
@@ -5322,17 +5320,17 @@ async function renderLabour() {
     if (datePicker) datePicker.addEventListener('change', () => { activeLabourDate = datePicker.value || ''; renderLabour(); });
     const todayBtn = container.querySelector('#labour-today-btn');
     if (todayBtn) todayBtn.addEventListener('click', () => { activeLabourDate = ''; renderLabour(); });
-    // Month buttons: jump to the latest available day in that month (or first if none yet)
-    container.querySelectorAll('.labour-month-btn').forEach(b => {
-      b.addEventListener('click', () => {
-        const ym = b.dataset.month;
-        if (ym === todayStr.slice(0,7)) { activeLabourDate = ''; renderLabour(); return; }
-        // Pick the most recent day available in this month from the index
+    // Month dropdown — jump to most recent available day in the selected month
+    const monthSelect = container.querySelector('#labour-month-select');
+    if (monthSelect) {
+      monthSelect.addEventListener('change', () => {
+        const ym = monthSelect.value;
+        if (!ym) { activeLabourDate = ''; renderLabour(); return; }
         const days = allIndexEntries.filter(e => e.dateISO.startsWith(ym)).sort((a,z) => z.dateISO.localeCompare(a.dateISO));
         activeLabourDate = days.length ? days[0].dateISO : ym + '-01';
         renderLabour();
       });
-    });
+    }
     // Day buttons: jump directly to that specific date
     container.querySelectorAll('.labour-day-btn').forEach(b => {
       b.addEventListener('click', () => { activeLabourDate = b.dataset.date; renderLabour(); });
