@@ -381,7 +381,7 @@ const FACADE_FILES = [
   { contractor:'Glass Railing',         scope:'T1-T6 per flat',         defaultTower:'', fileId:'1-CuQg-27_d36PsSRs5PMkBlVm6qdPXDNSS3P1nAmoPc' },
   { contractor:'Kitchen Railing',       scope:'T1-T5 per flat',         defaultTower:'', fileId:'1vkKaTDly6ZYdt6gxwvIONqWQPPkRCcfdrVSLjHU_gZg' },
   { contractor:'Staircase Window',      scope:'T1-T6 per flat',         defaultTower:'', fileId:'1GHciGhT70zqgK-nU8weadmbsjfzKQtw2_jsmHNM7rBs' },
-  { contractor:'Main Windows',          scope:'T1-T3 per flat',         defaultTower:'', fileId:'1PwFjHkqEko4NT1nyUxp9RP7nnOq3ZvhNKu65EVDkcCI' },
+  { contractor:'Main Windows',          scope:'T1-T6 per flat',         defaultTower:'', fileId:'1PwFjHkqEko4NT1nyUxp9RP7nnOq3ZvhNKu65EVDkcCI' },
   { contractor:'Louver Door',           scope:'T1-T6 per flat',         defaultTower:'', fileId:'1iRSXhmmFZlJK16VKR1zT7qmQG7VU6JuHksb1LSVPaPU' },
   { contractor:'Staircase Railing',     scope:'T1-T6',                  defaultTower:'', fileId:'1sjogxhrfICSqmfpTBHLr56Dk58WAsu1oCSrh9Ag-pGo' },
   { contractor:'FHC Lacquered Door',    scope:'All towers',             defaultTower:'', fileId:'1TgATZVcqM9MXGWBwjbvLDcStQDkOFA6LdfGEuVNq-Yw' },
@@ -1444,6 +1444,124 @@ async function loadGlassRailingExecution(fileId) {
   ];
   const results = await Promise.all(tabs.map(async ({ gid, tower }) => {
     try { return parseGlassRailingTab(await fetchSheetTabRaw(fileId, gid), tower); }
+    catch { return []; }
+  }));
+  return results.flat();
+}
+
+// ─── Main Windows (Window status report) ────────────────────────────────────
+// Source: 1PwFjHkqEko… — one tab per tower (T1-T6). Column NAMES differ between
+// towers (e.g. "Material received at Site" vs "Outer Frame received at site",
+// "Glass Installations" vs "Shutter & Glass Installation"), so each of the five
+// tracked stages is located by a synonym matcher rather than a fixed index.
+// Tracked stages: Sizes Measurement · Outer Frame at Site · Outer Frame Install ·
+// Glass at Site · Shutter & Glass Install. A tower that lacks a stage column
+// simply drops that stage (e.g. T1/T2 have no separate "Glass at Site").
+function parseMainWindowTab(csv, towerLabel) {
+  const rows = [];
+  let row = [], field = '', inQ = false;
+  for (let i = 0; i <= csv.length; i++) {
+    const ch = i < csv.length ? csv[i] : '\n';
+    if (inQ) {
+      if (ch === '"' && csv[i + 1] === '"') { field += '"'; i++; }
+      else if (ch === '"') inQ = false;
+      else field += ch;
+    } else {
+      if (ch === '"') inQ = true;
+      else if (ch === ',') { row.push(field.trim()); field = ''; }
+      else if (ch === '\n' || ch === '\r') {
+        if (ch === '\r' && csv[i + 1] === '\n') i++;
+        row.push(field.trim());
+        if (row.some(c => c)) rows.push(row);
+        row = []; field = '';
+      } else field += ch;
+    }
+  }
+  if (field || row.length) { row.push(field.trim()); if (row.some(c => c)) rows.push(row); }
+  if (rows.length < 2) return [];
+
+  // Header row carries "Area Name"
+  let hIdx = -1;
+  for (let i = 0; i < Math.min(rows.length, 5); i++) {
+    if (rows[i].map(c => (c || '').toUpperCase()).some(h => h.includes('AREA NAME'))) { hIdx = i; break; }
+  }
+  if (hIdx < 0) return [];
+  const H = rows[hIdx].map(c => (c || '').toUpperCase().replace(/\s+/g, ' ').trim());
+  const iFloor = H.findIndex(h => h.includes('FLOOR'));
+  const iArea  = H.findIndex(h => h.includes('AREA NAME'));
+  if (iArea < 0) return [];
+
+  // Five tracked stages, in display order, each with a synonym matcher.
+  const SPECS = [
+    { name: 'Sizes Measurement',       m: h => h.includes('SIZES') },
+    { name: 'Outer Frame at Site',     m: h => (h.includes('OUTER FRAME') && (h.includes('RECEIV') || h.includes('AT SITE')) && !h.includes('INSTALL')) || h.includes('MATERIAL RECEIVED') },
+    { name: 'Outer Frame Install',     m: h => h.includes('OUTER FRAME') && h.includes('INSTALL') },
+    { name: 'Glass at Site',           m: h => h.includes('GLASS') && (h.includes('RECEIV') || h.includes('AT SITE')) && !h.includes('INSTALL') },
+    { name: 'Shutter & Glass Install', m: h => (h.includes('SHUTTER') && h.includes('GLASS')) || (h.includes('GLASS') && h.includes('INSTALL')) || (h.includes('WINDOW') && h.includes('GLASS') && h.includes('INSTALL')) },
+  ];
+  const stageCols = SPECS
+    .map(s => ({ name: s.name, idx: H.findIndex((h, k) => k > iArea && s.m(h)) }))
+    .filter(s => s.idx >= 0);
+  if (stageCols.length === 0) return [];
+
+  function cellStat(val) {
+    const v = (val || '').trim().toUpperCase();
+    if (v === 'TRUE') return 'done';
+    if (v === '' || v === 'FALSE') return 'pending';
+    return 'delay'; // dates ("5 Jun"), "wip", "tile pending", "HOLD", etc.
+  }
+
+  const items = [];
+  let curFloor = '';
+  for (let i = hIdx + 1; i < rows.length; i++) {
+    const r = rows[i];
+    if (!r.some(c => c)) continue;
+    const f = (r[iFloor >= 0 ? iFloor : 0] || '').trim();
+    if (f) curFloor = f;
+    const flat = (r[iArea] || '').trim();
+    if (!flat || !/\d/.test(flat)) continue; // skip title/summary rows
+
+    const breakdown = stageCols.map(s => ({
+      shortName: s.name,
+      status: cellStat(r[s.idx]),
+      raw: (r[s.idx] || '').trim(),
+    }));
+    const doneCount  = breakdown.filter(s => s.status === 'done').length;
+    const delayCount = breakdown.filter(s => s.status === 'delay').length;
+    let status;
+    if (doneCount === breakdown.length)           status = 'done';
+    else if (doneCount === 0 && delayCount === 0) status = 'pending';
+    else                                           status = 'delay';
+    const remark = breakdown
+      .filter(s => s.status === 'delay' && s.raw && !['TRUE','FALSE'].includes(s.raw.toUpperCase()))
+      .map(s => `${s.shortName}: ${s.raw}`).join('; ');
+    const floorLabel = curFloor.replace(/floor/i, '').trim();
+
+    items.push({
+      contractor: 'Main Windows',
+      tower: towerLabel,
+      label: floorLabel ? `Fl ${floorLabel} · ${flat}` : flat,
+      done: doneCount, total: breakdown.length,
+      status, remark,
+      stageNames: breakdown.map(s => s.shortName),
+      states: breakdown.map(s => s.status === 'done' ? 'TRUE' : s.status === 'delay' ? s.raw : 'FALSE'),
+      stageBreakdown: breakdown,
+    });
+  }
+  return items;
+}
+
+async function loadMainWindow(fileId) {
+  const tabs = [
+    { gid: 2065224245, tower: 'T1' },
+    { gid: 250206001,  tower: 'T2' },
+    { gid: 0,          tower: 'T3' },
+    { gid: 1356129280, tower: 'T4' },
+    { gid: 1707231163, tower: 'T5' },
+    { gid: 987447779,  tower: 'T6' },
+  ];
+  const results = await Promise.all(tabs.map(async ({ gid, tower }) => {
+    try { return parseMainWindowTab(await fetchSheetTabRaw(fileId, gid), tower); }
     catch { return []; }
   }));
   return results.flat();
@@ -3164,6 +3282,7 @@ async function loadCategory(key) {
     const KITCHEN_SHAFT_ID     = '1Eq5_nqi6AMyvbNLsiAw6I4DafCuLDJSPodjSLETsqPI';
     const LOUVER_DOOR_ID           = '1iRSXhmmFZlJK16VKR1zT7qmQG7VU6JuHksb1LSVPaPU';
     const STAIRCASE_RAILING_ID     = '1sjogxhrfICSqmfpTBHLr56Dk58WAsu1oCSrh9Ag-pGo';
+    const MAIN_WINDOW_ID           = '1PwFjHkqEko4NT1nyUxp9RP7nnOq3ZvhNKu65EVDkcCI';
     const FACADE_OVERRIDES = {
       '1xKCbALNOZb9gOE2turvdtVuyOqD5AXqVsc1UhuNdW1Y': parseKrishnaFacade,
       '1Fis0XdnyzqlvxUOCgK6is1hER5flR2cCfp9Jeqs7Ygw': parseBaffleCeiling,
@@ -3194,6 +3313,8 @@ async function loadCategory(key) {
       if (f.fileId === LOUVER_DOOR_ID) return loadLouverDoor(LOUVER_DOOR_ID).catch(()=>[]);
       // Staircase Railing: dedicated per-tower loader (T1–T6 by GID); 2 stages tracked
       if (f.fileId === STAIRCASE_RAILING_ID) return loadStaircaseRailing(STAIRCASE_RAILING_ID).catch(()=>[]);
+      // Main Windows: per-tower loader (T1–T6 by GID); 5 window-stage columns tracked
+      if (f.fileId === MAIN_WINDOW_ID) return loadMainWindow(MAIN_WINDOW_ID).catch(()=>[]);
       return fetchSheet(f.fileId).then(md => {
         const overrideParser = FACADE_OVERRIDES[f.fileId];
         return overrideParser
