@@ -390,9 +390,8 @@ const STATUS_TABS = [
   { key:'pending', label:'Pending',    icon:'🕐', color:'#b45309', bg:'#fffbeb', border:'#fcd34d', desc:'Not started' },
 ];
 const TENDER_TABS = [
-  { key:'done',       label:'Awarded / Done', icon:'✅', color:'#16a34a', bg:'#f0fdf4', border:'#86efac', desc:'Completed' },
-  { key:'inprogress', label:'In Progress',    icon:'🔄', color:'#1d4ed8', bg:'#eff6ff', border:'#93c5fd', desc:'Ongoing' },
-  { key:'pending',    label:'Pending',        icon:'🕐', color:'#b45309', bg:'#fffbeb', border:'#fcd34d', desc:'Not started' },
+  { key:'done',    label:'Awarded / Done', icon:'✅', color:'#16a34a', bg:'#f0fdf4', border:'#86efac', desc:'Completed' },
+  { key:'pending', label:'Pending',        icon:'🕐', color:'#b45309', bg:'#fffbeb', border:'#fcd34d', desc:'Not started / In Progress' },
 ];
 
 // ─── STATE ────────────────────────────────────────────────
@@ -401,7 +400,7 @@ let activeTab = 'tendering';
 let activeWorkSub = 'waterproof';
 let activeWorkStatus = 'done';
 let activeLabourSub = 'all';
-let activeTenderStatus = 'inprogress';
+let activeTenderStatus = 'pending';
 let activeTenderProject = 'all';  // Tendering: project sub-filter
 let activeWorkItem = 'all';     // Within a live work sub-tab: which Item/Contractor is selected
 let activeWorkLocation = 'all'; // Within a live work sub-tab: which Tower/Location is selected
@@ -681,7 +680,7 @@ function parseTendering(md) {
       authority: (c[iAuth] ||'').trim(),
       vendor:    (c[iVen]  ||'').trim(),
       remark:    (c[iRem]  ||'').trim(),
-      status:    rawStatus === 'done' ? 'done' : rawStatus === 'inprogress' ? 'inprogress' : 'pending',
+      status:    rawStatus === 'done' ? 'done' : 'pending', // inprogress merged into pending
     };
   }).filter(r => r.scope || r.location); // drop blank rows
 }
@@ -3229,16 +3228,15 @@ async function renderTendering() {
     const allProjects = [...new Set(rows.map(r => r.project).filter(Boolean))].sort();
     if (activeTenderProject !== 'all' && !allProjects.includes(activeTenderProject)) activeTenderProject = 'all';
     const scopedRows = activeTenderProject === 'all' ? rows : rows.filter(r => r.project === activeTenderProject);
-    const counts = { done:0, inprogress:0, pending:0 };
+    const counts = { done:0, pending:0 };
     scopedRows.forEach(r => counts[r.status]++);
     const tab = TENDER_TABS.find(t => t.key === activeTenderStatus);
     const filtered = scopedRows.filter(r => r.status === activeTenderStatus);
     const pillStyles = {
-      done:       'background:#dcfce7;color:#16a34a',
-      inprogress: 'background:#dbeafe;color:#1d4ed8',
-      pending:    'background:#fef3c7;color:#b45309',
+      done:    'background:#dcfce7;color:#16a34a',
+      pending: 'background:#fef3c7;color:#b45309',
     };
-    const pillText = { done:'Done', inprogress:'In Progress', pending:'Pending' };
+    const pillText = { done:'Awarded / Done', pending:'Pending' };
     // Project strip
     const projNav = allProjects.length >= 2 ? `
       <div style="font-size:10px;font-weight:700;color:#94a3b8;letter-spacing:1.5px;text-transform:uppercase;margin-bottom:8px;margin-top:4px">🏗️ Project</div>
