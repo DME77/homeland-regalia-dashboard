@@ -270,7 +270,7 @@ tr:nth-child(even) td { background:var(--tbl-alt); }
       <button class="tab-btn" data-tab="work">🏗️ Work Execution</button>
       <button class="tab-btn" data-tab="drawings">📐 Drawing Status</button>
       <button class="tab-btn active" data-tab="tendering">📋 Tendering</button>
-      <button class="tab-btn" data-tab="labour">👷 Labour Report</button>
+      <button class="tab-btn" data-tab="labour">👷 Manpower Report</button>
       <button class="tab-btn" data-tab="purchasable">🛒 Purchasable Items</button>
       <button class="tab-btn" data-tab="elevators">🛗 Elevators</button>
     </div><!-- /tabnav -->
@@ -5030,7 +5030,7 @@ async function renderLabour() {
   const subnav = subnavHtml(LABOUR_SUBS, activeLabourSub, s => s.live ? '🟢 Live' : `Wave ${s.wave}`);
   if (!sub.live) {
     container.innerHTML = `
-      <div class="eyebrow">${sub.icon} ${escapeHtml(sub.label)} Labour</div>
+      <div class="eyebrow">${sub.icon} ${escapeHtml(sub.label)} Manpower Report</div>
       ${subnav}
       ${placeholderHtml(`${sub.label} labour — wiring up in Wave ${sub.wave}`, `Today's site headcount for ${sub.label.toLowerCase()} contractors will appear here once the daily attendance sheet is linked. Currently estimated values only.`)}`;
     container.querySelectorAll('.sub-btn').forEach(b => {
@@ -5038,7 +5038,7 @@ async function renderLabour() {
     });
     return;
   }
-  container.innerHTML = `<div class="eyebrow">${sub.icon} ${escapeHtml(sub.label)} Labour</div>${subnav}${liveBar('loading')}<div class="loading">⏳ Pulling from Drive…</div>`;
+  container.innerHTML = `<div class="eyebrow">${sub.icon} ${escapeHtml(sub.label)} Manpower Report</div>${subnav}${liveBar('loading')}<div class="loading">⏳ Pulling from Drive…</div>`;
   container.querySelectorAll('.sub-btn').forEach(b => {
     b.addEventListener('click', () => { activeLabourSub = b.dataset.key; renderLabour(); });
   });
@@ -5307,7 +5307,7 @@ async function renderLabour() {
         }).join('')}</tbody></table>`;
     const lastEditPlaceholder = '';
     container.innerHTML = `
-      <div class="eyebrow">${sub.icon} ${escapeHtml(sub.label)} Labour <span class="tag live">LIVE</span></div>
+      <div class="eyebrow">${sub.icon} ${escapeHtml(sub.label)} Manpower Report <span class="tag live">LIVE</span></div>
       ${subnav}
       ${liveBar('live', rows.length, sources.join(' · '))}
       ${dateBannerHtml}
@@ -5318,7 +5318,7 @@ async function renderLabour() {
       <div class="tbl-wrap">
         <div class="tbl-head" style="background:#f0f7ff;border-bottom:1px solid #bfdbfe">
           <span>${sub.icon}</span>
-          <span class="tbl-title" style="color:#1e3a5f">${escapeHtml(sub.label)} — Labour Deployment · ${!isToday ? `<span style="color:#b45309">${escapeHtml(activeLabourDate)}</span>` : 'Today'}</span>
+          <span class="tbl-title" style="color:#1e3a5f">${escapeHtml(sub.label)} — Manpower Deployment · ${!isToday ? `<span style="color:#b45309">${escapeHtml(activeLabourDate)}</span>` : 'Today'}</span>
           <span class="tbl-count" style="background:#2d5986">${rows.length} contractors</span>
         </div>
         ${tableHtml}
@@ -5346,7 +5346,7 @@ async function renderLabour() {
       b.addEventListener('click', () => { activeLabourDate = b.dataset.date; renderLabour(); });
     });
   } catch (e) {
-    container.innerHTML = `<div class="eyebrow">${sub.icon} ${escapeHtml(sub.label)} Labour</div>${subnav}<div class="error"><strong>Failed to load:</strong> ${escapeHtml(e?.message || String(e))}</div>`;
+    container.innerHTML = `<div class="eyebrow">${sub.icon} ${escapeHtml(sub.label)} Manpower Report</div>${subnav}<div class="error"><strong>Failed to load:</strong> ${escapeHtml(e?.message || String(e))}</div>`;
     container.querySelectorAll('.sub-btn').forEach(b => {
       b.addEventListener('click', () => { activeLabourSub = b.dataset.key; renderLabour(); });
     });
