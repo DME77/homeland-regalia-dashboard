@@ -778,7 +778,11 @@ function parseInteriorLabour(md) {
     const c = parseRow(lines[i]);
     const first = (c[0] || '').toUpperCase();
     // gviz format: TOTAL/REQUIRED rows have empty labels — detect by empty col 0+1 with numbers
-    const isUnlabeled = !first && !((c[1] || '').trim()) && c.slice(2).some(v => parseInt(v) > 0);
+    // Detect by empty label cols + at least one NUMERIC cell (including 0). The
+    // old `> 0` test skipped an all-zero TOTAL row (a day with no attendance yet),
+    // which caused the REQUIRED row to be misread as Present — showing committed
+    // numbers under "Present" and 0 committed.
+    const isUnlabeled = !first && !((c[1] || '').trim()) && c.slice(2).some(v => (v||'').trim() !== '' && !isNaN(Number(v)));
     if (first.includes('TOTAL') || (isUnlabeled && !totals)) {
       totals = c.slice(2).map(v => parseInt(v) || 0);
     } else if (first.includes('REQUIRED') || (isUnlabeled && totals && !required)) {
@@ -5159,8 +5163,10 @@ async function renderLabour() {
         }
       }
     }
-    // Facade: only use archive for non-today dates (facade live file is separate)
-    if (!isToday && activeLabourDate) {
+    // Facade: use the monthly archive for any date in an archived month (incl.
+    // today) so Present tracks the maintained archive tab — mirrors interior/MEP.
+    // Falls back to the live facade file only for dates outside archived months.
+    if (activeLabourDate) {
       for (const arch of LABOUR_FACADE_MONTHLY) {
         if (activeLabourDate.startsWith(arch.yearMonth)) {
           const d  = parseInt(activeLabourDate.slice(8));
