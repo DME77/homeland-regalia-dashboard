@@ -334,6 +334,10 @@ const LABOUR_INTERIOR_MONTHLY = [
   { yearMonth: '2026-05', fileId: '1FvInWQZVxmqBjrfVH3QXZrz9KlACnW-H70t7OlQ39mo', tabSuffix: 'May'  },
   { yearMonth: '2026-06', fileId: '1cqc7M8OjL_23iGk4nUNyNf4GLkxUbimb9PZoOGn-6MI',  tabSuffix: 'June' },
 ];
+const LABOUR_FACADE_MONTHLY = [
+  { yearMonth: '2026-05', fileId: '1mmjOcW8TTprShp1stzVpT6HnUkUWeJ0a0A8PC7R5ky4', tabSuffix: 'May'  },
+  { yearMonth: '2026-06', fileId: '1EpjLagEaPW3tO6W2I_4lsZzQGBAZYF7Z1b6GTg_BhEE', tabSuffix: 'June' },
+];
 const FACADE_FOLDER_ID = '1Aj406SB77Un-nQDZC1HaAVOLTRZp_yoC';
 const PLUMBING_FILES = [
   { contractor:'Pradeep',  scope:'T-01 + Clubhouse',     defaultTower:'T1', fileId:'1QQ1w7fXFr0_eMDtJrX68mpX8112myPsx4WqFHaMgttk' },
@@ -5065,13 +5069,16 @@ async function renderLabour() {
     }
     const indexEntries = window._labourIndexCache || [];
 
-    // ── Augment with days from LABOUR_INTERIOR_MONTHLY archives ───────────
-    // Populates all days of each configured month so they appear in the picker.
+    // ── Augment with days from all monthly archives (interior + facade) ─────
     const allIndexEntries = [...indexEntries];
-    LABOUR_INTERIOR_MONTHLY.forEach(({ yearMonth }) => {
+    const _allMonthlyYMs = new Set([
+      ...LABOUR_INTERIOR_MONTHLY.map(e => e.yearMonth),
+      ...LABOUR_FACADE_MONTHLY.map(e => e.yearMonth),
+    ]);
+    _allMonthlyYMs.forEach(yearMonth => {
       const [yr, mo] = yearMonth.split('-').map(Number);
       const totalDays = new Date(yr, mo, 0).getDate();
-      const monAbbr   = new Date(yr, mo-1, 1).toLocaleString('en-US', { month: 'short' }); // "May"
+      const monAbbr   = new Date(yr, mo-1, 1).toLocaleString('en-US', { month: 'short' });
       for (let d = 1; d <= totalDays; d++) {
         const iso = `${yr}-${String(mo).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
         if (!allIndexEntries.find(e => e.dateISO === iso)) {
@@ -5105,13 +5112,20 @@ async function renderLabour() {
     // ── Detect monthly archive for interior ────────────────────────────────
     // If the selected date falls in a LABOUR_INTERIOR_MONTHLY entry, fetch from
     // that workbook's date-named tab (e.g. "15-May") instead of the live sheet.
-    let _monthlyArchive = null; // { fileId, tabName }
+    let _monthlyArchive = null; // interior archive { fileId, tabName }
+    let _monthlyFacadeArchive = null; // facade archive  { fileId, tabName }
     if (!isToday && activeLabourDate) {
       for (const arch of LABOUR_INTERIOR_MONTHLY) {
         if (activeLabourDate.startsWith(arch.yearMonth)) {
           const d = parseInt(activeLabourDate.slice(8));
-          // Use arch.tabSuffix exactly as configured ("May" → "28-May", "June" → "05-June")
           _monthlyArchive = { fileId: arch.fileId, tabName: `${String(d).padStart(2,'0')}-${arch.tabSuffix}` };
+          break;
+        }
+      }
+      for (const arch of LABOUR_FACADE_MONTHLY) {
+        if (activeLabourDate.startsWith(arch.yearMonth)) {
+          const d = parseInt(activeLabourDate.slice(8));
+          _monthlyFacadeArchive = { fileId: arch.fileId, tabName: `${String(d).padStart(2,'0')}-${arch.tabSuffix}` };
           break;
         }
       }
@@ -5143,14 +5157,21 @@ async function renderLabour() {
     }
     if (activeLabourSub === 'facade' || activeLabourSub === 'all') {
       try {
-        const md = await fetchSheet(resolvedIds.facade);
+        let md;
+        const usedFacadeFileId = _monthlyFacadeArchive ? _monthlyFacadeArchive.fileId : resolvedIds.facade;
+        if (_monthlyFacadeArchive) {
+          const csv = await fetchSheetTabRawByName(_monthlyFacadeArchive.fileId, _monthlyFacadeArchive.tabName);
+          md = csvToPipeRows(csv);
+        } else {
+          md = await fetchSheet(resolvedIds.facade);
+        }
         const f  = parseFacadeLabour(md);
         sources.push('Facade Labour');
-        sourceFiles.push({ label:'Facade', fileId: resolvedIds.facade });
+        sourceFiles.push({ label:'Facade', fileId: usedFacadeFileId });
         if (f.reportDate) reportDates.push({ label: 'Facade', date: f.reportDate });
         f.vendors.forEach(v => rows.push({ kind:'facade', vendor: v.vendor, activity: v.activity || '—', present: v.present, committed: v.committed, remarks: v.remarks || '' }));
       } catch(e) {
-        fetchErrors.push({ label:'Facade Labour', fileId: resolvedIds.facade, msg: e.message });
+        fetchErrors.push({ label:'Facade Labour', fileId: _monthlyFacadeArchive?.fileId || resolvedIds.facade, msg: e.message });
       }
     }
     const MEP_SUBS = ['mechanical', 'plumbing', 'electrical', 'fire'];
@@ -5190,7 +5211,7 @@ async function renderLabour() {
       .filter(e => e.dateISO.startsWith(selectedMonth))
       .sort((a,b) => a.dateISO.localeCompare(b.dateISO));
 
-    const indexConfigured = !!(FILES.labourIndex || LABOUR_INTERIOR_MONTHLY.length);
+    const indexConfigured = !!(FILES.labourIndex || LABOUR_INTERIOR_MONTHLY.length || LABOUR_FACADE_MONTHLY.length);
     const detectedDateStr = reportDates.length > 0
       ? reportDates.map(r => `${r.label}: <b>${escapeHtml(r.date)}</b>`).join(' · ')
       : isToday ? '<span style="color:#94a3b8">today\'s live data</span>' : '<span style="color:#f59e0b">date not in index</span>';
