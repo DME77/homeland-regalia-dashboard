@@ -548,7 +548,7 @@ const SHEET_TABS = {
     { gid: 645251445,  name: 'Tower 3' },
     { gid: 1211789135, name: 'Tower 4' },
     { gid: 553356579,  name: 'Tower 5' },
-    { gid: 999718682,  name: 'Tower 6' },
+    { gid: 1999718682, name: 'Tower 6' },
   ],
 };
 
@@ -2209,7 +2209,7 @@ async function loadStaircaseRailing(fileId) {
     { gid: 645251445,  tower: 'T3' },
     { gid: 1211789135, tower: 'T4' },
     { gid: 553356579,  tower: 'T5' },
-    { gid: 999718682,  tower: 'T6' },
+    { gid: 1999718682, tower: 'T6' },
   ];
   const results = await Promise.all(tabs.map(async ({ gid, tower }) => {
     try { return parseStaircaseRailingTab(await fetchSheetTabRaw(fileId, gid), tower); }
