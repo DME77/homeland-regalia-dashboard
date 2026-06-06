@@ -319,6 +319,8 @@ const FILES = {
   interior:       '15WH66qd3e04ojvDhg7DQiWVDOLa9oDvo8LQDpJtQL_U',
   elevators:      '19FPO2uYXc5yaGEvnK4M8BsNj_45RUzDeEAFfaQ-DgLU',
   commercialKitchen: '1831xcw0P-qb1BKL1qtVUHwrLyC5TFLGGdlHUDSEIsEA',
+  kitchenWardrobe: '11MghP-8uexAw292CoYSSKNoZswP1vpzgPNk8_huGrh4',
+  vanity: '1lVaxVDsvSwkCPeD4Fzc2lCvrHYGgQB_IjiNGJyEdRxA',
   mepLabour:      '1dBfjaVVyud5AXhFK3a771p67134FQkOHIaRFGNeioJg',
   planner:        '1EsUx8Ez8-gjfLT5nf8MiOMqYlBubMRWnTl9dgi-7_R4',
   // Index of daily labour reports: columns → Date | Interior File ID | Facade File ID | MEP File ID
@@ -437,8 +439,20 @@ let activeKitchenSubArea = 'all';      // Commercial Kitchen: Sub-area filter (c
 let activeLabourDate = '';       // 'YYYY-MM-DD' selected by date picker; '' = today/live
 let activeLabourViewMode = 'daily'; // 'daily' | 'monthly' — monthly fetches Master tab
 
-let activePurchasableSub = 'kitchen';  // Purchasable Items tab: 'kitchen' or 'watcon'
+let activePurchasableSub = 'kitchen';  // Purchasable Items tab: 'kitchen' | 'kw-kitchen' | 'kw-wardrobe' | 'watcon'
 let activeWatconDept = 'dwg';          // Watcon sub-tab: 'dwg' | 'execution' | 'pumps'
+
+// Kitchen & Wardrobe sub-tab (Purchasable Items)
+let activeKwTower         = 'all';     // 'all' | 'TOWER-03' | … | 'TOWER-06'
+let activeKwVendor        = 'all';     // 'all' | a real vendor name | 'not-ordered'
+let activeKwNotOrdered    = 'all';     // sub-filter under "Not Ordered": 'all'|'hold'|'no-consent'|'sample'
+let activeKwKitchenStatus  = 'all';    // 'all' | milestone key (see KW_STATUSES)
+let activeKwWardrobeStatus = 'all';    // 'all' | milestone key
+
+// Vanity sub-tab (Purchasable Items)
+let activeVanityTower  = 'all';        // 'all' | 'TOWER-03' | …
+let activeVanityColumn = 'all';        // 'all' | a report column key (see VANITY_COLS)
+let activeVanityStatus = 'all';        // 'all' | 'done' | 'pending' | 'na' | 'hold'
 
 // ─── HELPERS ──────────────────────────────────────────────
 function escapeHtml(s) {
@@ -512,6 +526,20 @@ const SHEET_TABS = {
     { gid: 1472975891, name: 'CB items' },
     { gid: 2119318875, name: 'Haks' },
     { gid: 2091010628, name: 'ID' },
+  ],
+  // Kitchen & Wardrobe — per-flat pipeline, one tab per tower
+  '11MghP-8uexAw292CoYSSKNoZswP1vpzgPNk8_huGrh4': [
+    { gid: 1287710488, name: 'TOWER-03' },
+    { gid: 0,          name: 'TOWER-04' },
+    { gid: 1280935904, name: 'TOWER-05' },
+    { gid: 2128703554, name: 'TOWER-06' },
+  ],
+  // Vanity — per-flat column tracker, one tab per tower
+  '1lVaxVDsvSwkCPeD4Fzc2lCvrHYGgQB_IjiNGJyEdRxA': [
+    { gid: 1962673261, name: 'TOWER-03' },
+    { gid: 880865469,  name: 'TOWER-04' },
+    { gid: 1413428491, name: 'TOWER-05' },
+    { gid: 486639692,  name: 'TOWER-06' },
   ],
   // Interior Execution — all contractor tabs
   '15WH66qd3e04ojvDhg7DQiWVDOLa9oDvo8LQDpJtQL_U': [
@@ -4686,9 +4714,493 @@ async function renderCommercialKitchenInto(host) {
     host.innerHTML = `<div class="error"><strong>Failed to load:</strong> ${escapeHtml(e?.message || String(e))}</div>`;
   }
 }
+// ─── KITCHEN & WARDROBE ───────────────────────────────────
+// Per-flat pipeline tracker. Each tower tab has, per flat: Area Name, Vendor,
+// then 5 Kitchen stage cells and 5 Wardrobe stage cells (TRUE/FALSE or free
+// text like "NO CONSENT" / "HOLD" / "SAMPLE FLAT" / "DIS. APPROVED").
+// Only the three milestones are surfaced (RFM + Site Readiness are hidden).
+// idx = column index within each scope's 5-cell array
+// [0 RFM, 1 Measurement, 2 Site Readiness, 3 Carcass Delivered, 4 Installation]
+const KW_SHOWN = [
+  { label:'Measured',  full:'Measurement',       idx:1 },
+  { label:'Carcass',   full:'Carcass Delivered', idx:3 },
+  { label:'Installed', full:'Installation',      idx:4 },
+];
+// Summary buckets — keyed off the requested milestones (Measurement →
+// Carcass Delivered → Installation), plus Not-Started and Blocked.
+const KW_STATUSES = [
+  { key:'installed',  label:'Installed',        c:'#16a34a', activeBg:'#dcfce7', ring:'#86efac' },
+  { key:'carcass',    label:'Carcass Delivered',c:'#1d4ed8', activeBg:'#dbeafe', ring:'#93c5fd' },
+  { key:'measured',   label:'Measured',         c:'#b45309', activeBg:'#fef3c7', ring:'#fde68a' },
+  { key:'notstarted', label:'Not Started',      c:'#475569', activeBg:'#f1f5f9', ring:'#cbd5e1' },
+  { key:'blocked',    label:'Hold / No Consent',c:'#dc2626', activeBg:'#fee2e2', ring:'#fca5a5' },
+];
+const KW_STATUS_STYLE = Object.fromEntries(KW_STATUSES.map(s => [s.key, { bg:s.activeBg, c:s.c }]));
+function _kwTruthy(v) { return /^\s*true\s*$/i.test(String(v || '')); }
+// Row-based CSV → array of arrays (quote-aware, preserves row boundaries).
+function _kwCsvRows(csv) {
+  const rows = []; let row = [], field = '', inQ = false;
+  for (let i = 0; i < csv.length; i++) {
+    const ch = csv[i];
+    if (inQ) {
+      if (ch === '"') { if (csv[i+1] === '"') { field += '"'; i++; } else inQ = false; }
+      else field += ch;
+    } else if (ch === '"') inQ = true;
+    else if (ch === ',') { row.push(field); field = ''; }
+    else if (ch === '\n' || ch === '\r') {
+      if (ch === '\r' && csv[i+1] === '\n') i++;
+      row.push(field); rows.push(row); row = []; field = '';
+    } else field += ch;
+  }
+  if (field.length || row.length) { row.push(field); rows.push(row); }
+  return rows;
+}
+// Parse one tower tab → [{flat, vendor, kitchen:[5], wardrobe:[5], note}]
+function parseKitchenWardrobe(csv) {
+  const rows = _kwCsvRows(csv);
+  const out = [];
+  for (const r of rows) {
+    const flat = (r[0] || '').trim();
+    // Data rows start with a flat id like "T03/11" (a stray "T03163" also appears).
+    if (!/^T0\d\s*\/?\s*\d{2,3}$/i.test(flat)) continue;
+    const cells = r.slice(0, 12).map(c => (c || '').trim());
+    while (cells.length < 12) cells.push('');
+    out.push({
+      flat:     flat.replace(/\s+/g, ''),
+      vendor:   cells[1],
+      kitchen:  cells.slice(2, 7),
+      wardrobe: cells.slice(7, 12),
+      note:     cells.slice(2).filter(Boolean).join(' '),
+    });
+  }
+  return out;
+}
+// Classify one scope's 5 stage cells (+ vendor) into a KW_STATUSES key.
+function kwClassify(stages, vendor) {
+  if (_kwTruthy(stages[4])) return 'installed';
+  if (_kwTruthy(stages[3])) return 'carcass';
+  if (_kwTruthy(stages[1])) return 'measured';
+  const blob = (vendor + ' ' + stages.join(' ')).toLowerCase();
+  if (/no\s*consent|hold|sample/.test(blob)) return 'blocked';
+  return 'notstarted';
+}
+// Distinguish real vendors from the "not ordered" markers in the Vendor column.
+const KW_NOT_ORDERED = [
+  { key:'hold',       label:'Hold',         c:'#7f1d1d', activeBg:'#fef2f2', ring:'#ef4444' },
+  { key:'no-consent', label:'No Consent',   c:'#dc2626', activeBg:'#fee2e2', ring:'#fca5a5' },
+  { key:'sample',     label:'Sample Flats', c:'#c2410c', activeBg:'#ffedd5', ring:'#fdba74' },
+];
+function kwVendorKind(vendor) {
+  const v = (vendor || '').toLowerCase();
+  if (/no\s*consent/.test(v)) return 'no-consent';
+  if (/hold/.test(v))         return 'hold';
+  if (/sample/.test(v))       return 'sample';
+  return 'real';
+}
+function kwStatusPill(key) {
+  const s = KW_STATUS_STYLE[key] || { bg:'#f1f5f9', c:'#64748b' };
+  const label = (KW_STATUSES.find(x => x.key === key) || {}).label || key;
+  return `<span class="pill" style="background:${s.bg};color:${s.c}">${escapeHtml(label)}</span>`;
+}
+// One boolean/free-text stage cell → compact pill
+function kwStageCell(v) {
+  const t = (v || '').trim();
+  if (!t) return `<span style="color:#cbd5e1">—</span>`;
+  if (/^true$/i.test(t))  return `<span class="pill" style="background:#dcfce7;color:#16a34a">✓</span>`;
+  if (/^false$/i.test(t)) return `<span class="pill" style="background:#f1f5f9;color:#94a3b8">✗</span>`;
+  return `<span class="pill" style="background:#fef3c7;color:#b45309;font-size:9px">${escapeHtml(t)}</span>`;
+}
+function kwColorCard(group, key, label, count, active, palette, desc) {
+  const c = palette.c, bg = active ? palette.activeBg : '#fff', rb = palette.ring;
+  const border = active ? c : '#e2e8f0';
+  return `<button class="card${active?' active':''}" data-kwgroup="${group}" data-kwkey="${escapeHtml(key)}"
+    style="flex:0 0 auto;min-width:140px;border-color:${border};background:${bg};box-shadow:${active?'0 0 0 3px '+rb:'0 1px 4px rgba(0,0,0,0.05)'}">
+    <div class="card-num" style="color:${c};font-size:22px">${count}</div>
+    <div class="card-label" style="font-size:11px">${escapeHtml(label)}</div>
+    ${desc ? `<div class="card-desc" style="font-size:10px;color:#64748b">${desc}</div>` : ''}
+  </button>`;
+}
+// % of a tower's flats that are Installed (completed) in the current scope.
+function kwTowerPct(rows) {
+  if (!rows.length) return '—';
+  const done = rows.filter(r => r.status === 'installed').length;
+  return Math.round(done / rows.length * 100) + '% done';
+}
+// scope = 'kitchen' | 'wardrobe' — each renders its own sub-tab.
+async function renderKitchenWardrobeInto(host, scope) {
+  const isKitchen = scope !== 'wardrobe';
+  const scopeKey   = isKitchen ? 'kitchen' : 'wardrobe';
+  const scopeTitle = isKitchen ? 'Kitchen' : 'Wardrobe';
+  const scopeIcon  = isKitchen ? '🍳' : '🚪';
+  const statusVar  = () => isKitchen ? activeKwKitchenStatus : activeKwWardrobeStatus;
+  const setStatus  = v => { if (isKitchen) activeKwKitchenStatus = v; else activeKwWardrobeStatus = v; };
+  host.innerHTML = `${liveBar('loading')}<div class="loading">⏳ Pulling ${scopeTitle} sheet…</div>`;
+  try {
+    const kwTabs = SHEET_TABS[FILES.kitchenWardrobe] || [];
+    const allRows = [];
+    for (const tab of kwTabs) {
+      const csv = await fetchSheetTabRaw(FILES.kitchenWardrobe, tab.gid).catch(() => '');
+      if (!csv || !csv.trim()) continue;
+      parseKitchenWardrobe(csv).forEach(row => {
+        row.tower  = tab.name;
+        row.cells  = isKitchen ? row.kitchen : row.wardrobe;   // the 5 stage cells for this scope
+        row.status = kwClassify(row.cells, row.vendor);
+        allRows.push(row);
+      });
+    }
+    if (allRows.length === 0) {
+      host.innerHTML = `<div class="error"><strong>No rows parsed.</strong> Make sure the Kitchen &amp; Wardrobe sheet is shared "Anyone with the link → Viewer". (It is currently pulled only via the private Drive connector.)</div>`;
+      return;
+    }
+    const towerNames = kwTabs.map(t => t.name);
+    if (activeKwTower !== 'all' && !towerNames.includes(activeKwTower)) activeKwTower = 'all';
+    // Tower scope
+    const towerRows = activeKwTower === 'all' ? allRows : allRows.filter(r => r.tower === activeKwTower);
+    // Real vendors only (the HOLD / NO CONSENT / SAMPLE markers are grouped into
+    // a single "Not Ordered" card with its own breakdown sub-filters).
+    const vendorList = [];
+    { const seen = new Set();
+      towerRows.forEach(r => { const v = (r.vendor || '').trim();
+        if (v && kwVendorKind(v) === 'real' && !seen.has(v)) { seen.add(v); vendorList.push(v); } }); }
+    vendorList.sort();
+    const notOrderedRows = towerRows.filter(r => kwVendorKind(r.vendor) !== 'real');
+    const noCounts = { all: notOrderedRows.length };
+    KW_NOT_ORDERED.forEach(s => { noCounts[s.key] = 0; });
+    notOrderedRows.forEach(r => { noCounts[kwVendorKind(r.vendor)]++; });
+    // Validate active selections
+    if (activeKwVendor !== 'all' && activeKwVendor !== 'not-ordered' && !vendorList.includes(activeKwVendor)) {
+      activeKwVendor = 'all'; activeKwNotOrdered = 'all';
+    }
+    if (activeKwVendor !== 'not-ordered') activeKwNotOrdered = 'all';
+    let vendorRows;
+    if (activeKwVendor === 'all')              vendorRows = towerRows;
+    else if (activeKwVendor === 'not-ordered') vendorRows = activeKwNotOrdered === 'all'
+                                                 ? notOrderedRows
+                                                 : notOrderedRows.filter(r => kwVendorKind(r.vendor) === activeKwNotOrdered);
+    else                                       vendorRows = towerRows.filter(r => (r.vendor || '').trim() === activeKwVendor);
+    // Status counts (within tower+vendor scope)
+    const counts = { all: vendorRows.length };
+    KW_STATUSES.forEach(s => { counts[s.key] = 0; });
+    vendorRows.forEach(r => { counts[r.status]++; });
+    // Apply status filter
+    let filtered = vendorRows;
+    if (statusVar() !== 'all') filtered = filtered.filter(r => r.status === statusVar());
+    // ── Cards ──
+    const towerCards = `<div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:0 0 4px 2px">📍 Tower</div><div class="cards" style="overflow-x:auto;flex-wrap:nowrap;padding-bottom:6px">
+      ${kwColorCard('tower','all','All Towers',allRows.length,activeKwTower==='all',{ c:'#1e3a5f', activeBg:'#e0e7ff', ring:'#c7d2fe' }, kwTowerPct(allRows))}
+      ${towerNames.map(t => { const tr = allRows.filter(r => r.tower === t); return kwColorCard('tower', t, t, tr.length, activeKwTower === t, { c:'#7c3aed', activeBg:'#f3e8ff', ring:'#e9d5ff' }, kwTowerPct(tr)); }).join('')}
+    </div>`;
+    const vendorCards = `<div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:10px 0 4px 2px">🏷️ Vendor · ${vendorList.length} ordered + Not Ordered</div><div class="cards" style="overflow-x:auto;flex-wrap:nowrap;padding-bottom:6px">
+      ${kwColorCard('vendor','all','All Vendors',towerRows.length,activeKwVendor==='all',{ c:'#1e3a5f', activeBg:'#e0e7ff', ring:'#c7d2fe' })}
+      ${vendorList.map(v => kwColorCard('vendor', v, v, towerRows.filter(r => (r.vendor||'').trim() === v).length, activeKwVendor === v, { c:'#0e7490', activeBg:'#cffafe', ring:'#a5f3fc' })).join('')}
+      ${kwColorCard('vendor','not-ordered','Not Ordered',noCounts.all,activeKwVendor==='not-ordered',{ c:'#dc2626', activeBg:'#fee2e2', ring:'#fca5a5' })}
+    </div>`;
+    // Breakdown sub-filters — only shown when "Not Ordered" is selected.
+    const notOrderedCards = activeKwVendor !== 'not-ordered' ? '' :
+      `<div style="font-size:10px;font-weight:700;color:#b91c1c;letter-spacing:1px;text-transform:uppercase;margin:8px 0 4px 14px">↳ Not Ordered breakdown</div><div class="cards" style="overflow-x:auto;flex-wrap:nowrap;padding-bottom:6px;margin-left:12px">
+        ${kwColorCard('notordered','all','All',noCounts.all,activeKwNotOrdered==='all',{ c:'#1e3a5f', activeBg:'#e0e7ff', ring:'#c7d2fe' })}
+        ${KW_NOT_ORDERED.map(s => kwColorCard('notordered', s.key, s.label, noCounts[s.key]||0, activeKwNotOrdered===s.key, s)).join('')}
+      </div>`;
+    // Note: the 'blocked' (Hold / No Consent) bucket is intentionally omitted
+    // from the status cards — those flats are surfaced via the "Not Ordered"
+    // vendor grouping instead. They still appear in "All" and in the table pill.
+    const statusCards = `<div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:10px 0 4px 2px">${scopeIcon} ${escapeHtml(scopeTitle)} status</div><div class="cards" style="overflow-x:auto;flex-wrap:nowrap;padding-bottom:6px">
+      ${kwColorCard('status','all','All',counts.all,statusVar()==='all',{ c:'#1e3a5f', activeBg:'#e0e7ff', ring:'#c7d2fe' })}
+      ${KW_STATUSES.filter(s => s.key !== 'blocked').map(s => kwColorCard('status', s.key, s.label, counts[s.key]||0, statusVar()===s.key, s)).join('')}
+    </div>`;
+    // ── Table (single scope · 3 milestone columns) ──
+    const stageHeads = KW_SHOWN.map(s => `<th style="text-align:center;font-size:10px" title="${escapeHtml(s.full)}">${escapeHtml(s.label)}</th>`).join('');
+    const tableHtml = filtered.length === 0
+      ? `<div class="empty">No flats match these filters.</div>`
+      : `<table style="min-width:760px">
+          <thead><tr>
+            <th>#</th><th>Flat</th><th>Vendor</th>
+            ${stageHeads}
+            <th style="text-align:center">Status</th>
+          </tr></thead>
+          <tbody>${filtered.map((r,i) => `<tr>
+            <td>${i+1}</td>
+            <td style="font-family:monospace;font-weight:700;color:#1e3a5f">${escapeHtml(r.flat)}</td>
+            <td style="font-size:11px">${escapeHtml(r.vendor||'—')}</td>
+            ${KW_SHOWN.map(s => `<td style="text-align:center">${kwStageCell(r.cells[s.idx])}</td>`).join('')}
+            <td style="text-align:center">${kwStatusPill(r.status)}</td>
+          </tr>`).join('')}</tbody>
+        </table>`;
+    const scopeParts = [];
+    if (activeKwTower !== 'all')  scopeParts.push(activeKwTower);
+    if (activeKwVendor !== 'all') scopeParts.push(activeKwVendor);
+    if (statusVar() !== 'all')    scopeParts.push((KW_STATUSES.find(s=>s.key===statusVar())||{}).label);
+    const scopeLabel = scopeParts.length === 0 ? 'All flats' : scopeParts.join(' · ');
+    host.innerHTML = `
+      ${liveBar('live', allRows.length, 'KITCHEN & WARDROBE.xlsx')}
+      ${towerCards}
+      ${vendorCards}
+      ${notOrderedCards}
+      ${statusCards}
+      <div style="font-size:11px;color:#64748b;margin:8px 0">Showing: <strong>${escapeHtml(scopeLabel)}</strong></div>
+      <div class="tbl-wrap" style="margin-top:8px">
+        <div class="tbl-head" style="background:#eff6ff;border-bottom:1px solid #bfdbfe">
+          <span>${scopeIcon}</span>
+          <span class="tbl-title" style="color:#1e3a5f">${escapeHtml(scopeTitle)} — ${escapeHtml(scopeLabel)}</span>
+          <span class="tbl-count" style="background:#1e3a5f">${filtered.length} flats</span>
+        </div>
+        <div style="overflow-x:auto">${tableHtml}</div>
+      </div>
+      <div style="font-size:11px;color:#94a3b8;text-align:center;margin-top:8px">
+        Source: <a href="https://docs.google.com/spreadsheets/d/${escapeHtml(FILES.kitchenWardrobe)}/edit" target="_blank" style="color:#1d4ed8;text-decoration:none">KITCHEN &amp; WARDROBE</a>
+        · Use the Reload button at the top to refresh.
+      </div>`;
+    host.querySelectorAll('[data-kwgroup]').forEach(b => {
+      b.addEventListener('click', () => {
+        const g = b.dataset.kwgroup, k = b.dataset.kwkey;
+        if (g === 'tower')         { activeKwTower = k; activeKwVendor = 'all'; activeKwNotOrdered = 'all'; }
+        else if (g === 'vendor')   { activeKwVendor = k; if (k !== 'not-ordered') activeKwNotOrdered = 'all'; }
+        else if (g === 'notordered') activeKwNotOrdered = k;
+        else if (g === 'status')     setStatus(k);
+        renderPurchasableTab();
+      });
+    });
+  } catch (e) {
+    host.innerHTML = `<div class="error"><strong>Failed to load:</strong> ${escapeHtml(e?.message || String(e))}</div>`;
+  }
+}
+// ─── VANITY ───────────────────────────────────────────────
+// Per-flat column tracker, one tab per tower. Columns vary by tower, so the
+// report columns are detected from each tab's header row by name; a column's
+// filter is only shown for towers that actually have it.
+const VANITY_COLS = [
+  { key:'vanity', label:'Vanity on Site', match:/vanity\s*on\s*site/i },
+  { key:'t1',     label:'Toilet 1',       match:/toilet\s*1/i },
+  { key:'t2',     label:'Toilet 2',       match:/toilet\s*2/i },
+  { key:'t3',     label:'Toilet 3',       match:/toilet\s*3/i },
+  { key:'t4',     label:'Toilet 4',       match:/toilet\s*4/i },
+  { key:'pd',     label:'PD',             match:/^\s*pd\s*$/i },
+];
+// The per-toilet columns. The sheet's "TOTAL NO OF VANITY" per flat = how many
+// of these are done (TRUE); summing TRUE across these = total toilets installed.
+const VANITY_TOILET_KEYS = ['t1', 't2', 't3', 't4', 'pd'];
+const VANITY_STATUSES = [
+  { key:'done',    label:'Done',    c:'#16a34a', activeBg:'#dcfce7', ring:'#86efac' },
+  { key:'pending', label:'Pending', c:'#b45309', activeBg:'#fef3c7', ring:'#fde68a' },
+  { key:'na',      label:'N/A',     c:'#475569', activeBg:'#f1f5f9', ring:'#cbd5e1' },
+  { key:'hold',    label:'Hold',    c:'#dc2626', activeBg:'#fee2e2', ring:'#fca5a5' },
+];
+function vanityCellStatus(v) {
+  const s = String(v || '').trim().toUpperCase();
+  if (/HOLD/.test(s))             return 'hold';
+  if (s === 'TRUE')               return 'done';
+  if (s === 'NA' || s === 'N/A')  return 'na';
+  return 'pending';   // FALSE, blank, or free text
+}
+function vanityPill(v) {
+  const t = (v || '').trim();
+  if (!t) return `<span style="color:#cbd5e1">—</span>`;
+  const st = vanityCellStatus(v);
+  if (st === 'done')    return `<span class="pill" style="background:#dcfce7;color:#16a34a">✓</span>`;
+  if (st === 'na')      return `<span class="pill" style="background:#f1f5f9;color:#64748b;font-size:9px">NA</span>`;
+  if (st === 'hold')    return `<span class="pill" style="background:#fee2e2;color:#dc2626;font-size:9px">HOLD</span>`;
+  if (/^false$/i.test(t)) return `<span class="pill" style="background:#f1f5f9;color:#94a3b8">✗</span>`;
+  return `<span class="pill" style="background:#fef3c7;color:#b45309;font-size:9px">${escapeHtml(t)}</span>`;
+}
+// Whether a flat's cell counts as a real toilet/item for the column total.
+// Excludes NA, HOLD, and sample flats (those aren't toilets to be installed).
+function vanityCountable(row, colKey) {
+  const v = row.cells[colKey];
+  if (!String(v || '').trim()) return false;          // blank = no toilet / no data
+  const st = vanityCellStatus(v);
+  if (st === 'na' || st === 'hold') return false;
+  if (/sample/i.test(v || '') || /sample/i.test(row.remark || '')) return false;
+  return true;
+}
+// A flat is "complete" when every present report column is done or N/A, with ≥1 done.
+function vanityRowComplete(cells) {
+  const vals = Object.values(cells);
+  if (!vals.length) return false;
+  let anyDone = false;
+  for (const v of vals) {
+    const st = vanityCellStatus(v);
+    if (st === 'pending' || st === 'hold') return false;
+    if (st === 'done') anyDone = true;
+  }
+  return anyDone;
+}
+// Parse one tower tab → [{flat, tower, cells:{colKey:value}, remark}]
+function parseVanity(csv, towerName) {
+  const rows = _kwCsvRows(csv);
+  // Header row = first row that names a report column (e.g. "VANITY ON SITE").
+  let hIdx = rows.findIndex(r => r.some(c => /vanity\s*on\s*site/i.test(c || '')));
+  if (hIdx < 0) return [];
+  const header = rows[hIdx].map(c => (c || '').trim());
+  // Map each report column to its index in this tower (only if present).
+  const colIdx = {};
+  VANITY_COLS.forEach(col => {
+    const j = header.findIndex(h => col.match.test(h));
+    if (j >= 0) colIdx[col.key] = j;
+  });
+  const remarkIdx = header.findIndex(h => /remark/i.test(h));
+  const flatRe = /^T0?\d\s*\/\s*\d{2,3}$/i;
+  const out = [];
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    const flat = (r[0] || '').trim();
+    if (!flatRe.test(flat)) continue;
+    const cells = {};
+    Object.entries(colIdx).forEach(([k, j]) => { cells[k] = (r[j] || '').trim(); });
+    out.push({
+      flat:   flat.replace(/\s+/g, ''),
+      tower:  towerName,
+      cells,
+      remark: remarkIdx >= 0 ? (r[remarkIdx] || '').trim() : '',
+    });
+  }
+  return out;
+}
+function vanTowerPct(rows) {
+  if (!rows.length) return '—';
+  const done = rows.filter(r => vanityRowComplete(r.cells)).length;
+  return Math.round(done / rows.length * 100) + '% done';
+}
+// Total toilets/vanities across a set of flats (matches the sheet's "TOTAL NO OF
+// VANITY"). installed = TRUE toilet cells; total = countable toilet cells
+// (excludes NA, HOLD, sample).
+function vanityToiletTotals(rows) {
+  let installed = 0, total = 0;
+  rows.forEach(r => VANITY_TOILET_KEYS.forEach(k => {
+    if (!(k in r.cells)) return;
+    if (!vanityCountable(r, k)) return;
+    total++;
+    if (vanityCellStatus(r.cells[k]) === 'done') installed++;
+  }));
+  return { installed, total };
+}
+async function renderVanityInto(host) {
+  host.innerHTML = `${liveBar('loading')}<div class="loading">⏳ Pulling Vanity sheet…</div>`;
+  try {
+    const vanTabs = SHEET_TABS[FILES.vanity] || [];
+    const allRows = [];
+    for (const tab of vanTabs) {
+      const csv = await fetchSheetTabRaw(FILES.vanity, tab.gid).catch(() => '');
+      if (!csv || !csv.trim()) continue;
+      allRows.push(...parseVanity(csv, tab.name));
+    }
+    if (allRows.length === 0) {
+      host.innerHTML = `<div class="error"><strong>No rows parsed.</strong> Make sure the Vanity sheet is shared "Anyone with the link → Viewer". (It is currently pulled only via the private Drive connector.)</div>`;
+      return;
+    }
+    const towerNames = vanTabs.map(t => t.name);
+    if (activeVanityTower !== 'all' && !towerNames.includes(activeVanityTower)) activeVanityTower = 'all';
+    const towerRows = activeVanityTower === 'all' ? allRows : allRows.filter(r => r.tower === activeVanityTower);
+    // Report columns present in the current scope (dynamic per tower).
+    const presentCols = VANITY_COLS.filter(col => towerRows.some(r => col.key in r.cells));
+    if (activeVanityColumn !== 'all' && !presentCols.some(c => c.key === activeVanityColumn)) {
+      activeVanityColumn = 'all'; activeVanityStatus = 'all';
+    }
+    if (activeVanityColumn === 'all') activeVanityStatus = 'all';
+    // Status breakdown for the selected column
+    const colScopeRows = activeVanityColumn === 'all' ? [] : towerRows.filter(r => activeVanityColumn in r.cells);
+    const stCounts = { all: colScopeRows.length };
+    VANITY_STATUSES.forEach(s => { stCounts[s.key] = 0; });
+    colScopeRows.forEach(r => { stCounts[vanityCellStatus(r.cells[activeVanityColumn])]++; });
+    // Filtered rows for the table
+    let filtered = towerRows;
+    if (activeVanityColumn !== 'all') filtered = filtered.filter(r => activeVanityColumn in r.cells);
+    if (activeVanityStatus !== 'all') filtered = filtered.filter(r => vanityCellStatus(r.cells[activeVanityColumn]) === activeVanityStatus);
+    // ── Cards ──
+    const towerCards = `<div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:0 0 4px 2px">📍 Tower</div><div class="cards" style="overflow-x:auto;flex-wrap:nowrap;padding-bottom:6px">
+      ${kwColorCard('tower','all','All Towers',allRows.length,activeVanityTower==='all',{ c:'#1e3a5f', activeBg:'#e0e7ff', ring:'#c7d2fe' }, vanTowerPct(allRows))}
+      ${towerNames.map(t => { const tr = allRows.filter(r => r.tower === t); return kwColorCard('tower', t, t, tr.length, activeVanityTower === t, { c:'#7c3aed', activeBg:'#f3e8ff', ring:'#e9d5ff' }, vanTowerPct(tr)); }).join('')}
+    </div>`;
+    // Total toilets/vanities (matches the sheet's "TOTAL NO OF VANITY" sum).
+    const toiletTot = vanityToiletTotals(towerRows);
+    const toiletBanner = `<div style="display:flex;gap:10px;flex-wrap:wrap;margin:10px 0">
+      <div style="flex:1 1 160px;background:#ecfdf5;border:1px solid #6ee7b7;border-radius:10px;padding:10px 14px">
+        <div style="font-size:22px;font-weight:800;color:#047857">${toiletTot.installed}</div>
+        <div style="font-size:11px;color:#065f46;font-weight:600">🚽 Toilets installed (Total No. of Vanity)</div>
+      </div>
+      <div style="flex:1 1 160px;background:#eff6ff;border:1px solid #93c5fd;border-radius:10px;padding:10px 14px">
+        <div style="font-size:22px;font-weight:800;color:#1d4ed8">${toiletTot.total}</div>
+        <div style="font-size:11px;color:#1e3a5f;font-weight:600">Total toilets (excl. NA / Hold / Sample)</div>
+      </div>
+      <div style="flex:1 1 160px;background:#fffbeb;border:1px solid #fcd34d;border-radius:10px;padding:10px 14px">
+        <div style="font-size:22px;font-weight:800;color:#b45309">${toiletTot.total - toiletTot.installed}</div>
+        <div style="font-size:11px;color:#92400e;font-weight:600">Toilets pending</div>
+      </div>
+    </div>`;
+    const colCards = `<div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:10px 0 4px 2px">🚿 Report column · ${presentCols.length} in scope</div><div class="cards" style="overflow-x:auto;flex-wrap:nowrap;padding-bottom:6px">
+      ${kwColorCard('column','all','All Columns',towerRows.length,activeVanityColumn==='all',{ c:'#1e3a5f', activeBg:'#e0e7ff', ring:'#c7d2fe' })}
+      ${presentCols.map(col => {
+        // Total = actual toilets to do: exclude NA, HOLD and sample flats.
+        const applicable = towerRows.filter(r => col.key in r.cells && vanityCountable(r, col.key));
+        const done = applicable.filter(r => vanityCellStatus(r.cells[col.key]) === 'done').length;
+        return kwColorCard('column', col.key, col.label, done, activeVanityColumn === col.key, { c:'#0e7490', activeBg:'#cffafe', ring:'#a5f3fc' }, `of ${applicable.length} toilets`);
+      }).join('')}
+    </div>`;
+    const statusCards = activeVanityColumn === 'all' ? '' :
+      `<div style="font-size:10px;font-weight:700;color:#0e7490;letter-spacing:1px;text-transform:uppercase;margin:8px 0 4px 14px">↳ ${escapeHtml((VANITY_COLS.find(c=>c.key===activeVanityColumn)||{}).label)} status</div><div class="cards" style="overflow-x:auto;flex-wrap:nowrap;padding-bottom:6px;margin-left:12px">
+        ${kwColorCard('status','all','All',stCounts.all,activeVanityStatus==='all',{ c:'#1e3a5f', activeBg:'#e0e7ff', ring:'#c7d2fe' })}
+        ${VANITY_STATUSES.map(s => kwColorCard('status', s.key, s.label, stCounts[s.key]||0, activeVanityStatus===s.key, s)).join('')}
+      </div>`;
+    // ── Table (dynamic columns) ──
+    const hasRemark = filtered.some(r => r.remark);
+    const colHeads = presentCols.map(c => `<th style="text-align:center;font-size:10px">${escapeHtml(c.label)}</th>`).join('');
+    const tableHtml = filtered.length === 0
+      ? `<div class="empty">No flats match these filters.</div>`
+      : `<table style="min-width:${320 + presentCols.length*90}px">
+          <thead><tr>
+            <th>#</th><th>Flat</th>
+            ${colHeads}
+            ${hasRemark ? '<th>Remark</th>' : ''}
+          </tr></thead>
+          <tbody>${filtered.map((r,i) => `<tr>
+            <td>${i+1}</td>
+            <td style="font-family:monospace;font-weight:700;color:#1e3a5f">${escapeHtml(r.flat)}</td>
+            ${presentCols.map(c => `<td style="text-align:center">${c.key in r.cells ? vanityPill(r.cells[c.key]) : '<span style="color:#cbd5e1">—</span>'}</td>`).join('')}
+            ${hasRemark ? `<td style="font-size:11px;color:#64748b">${escapeHtml(r.remark||'')}</td>` : ''}
+          </tr>`).join('')}</tbody>
+        </table>`;
+    const scopeParts = [];
+    if (activeVanityTower !== 'all')  scopeParts.push(activeVanityTower);
+    if (activeVanityColumn !== 'all') scopeParts.push((VANITY_COLS.find(c=>c.key===activeVanityColumn)||{}).label);
+    if (activeVanityStatus !== 'all') scopeParts.push((VANITY_STATUSES.find(s=>s.key===activeVanityStatus)||{}).label);
+    const scopeLabel = scopeParts.length === 0 ? 'All flats' : scopeParts.join(' · ');
+    host.innerHTML = `
+      ${liveBar('live', allRows.length, 'VANITY.xlsx')}
+      ${towerCards}
+      ${toiletBanner}
+      ${colCards}
+      ${statusCards}
+      <div style="font-size:11px;color:#64748b;margin:8px 0">Showing: <strong>${escapeHtml(scopeLabel)}</strong></div>
+      <div class="tbl-wrap" style="margin-top:8px">
+        <div class="tbl-head" style="background:#eff6ff;border-bottom:1px solid #bfdbfe">
+          <span>🪞</span>
+          <span class="tbl-title" style="color:#1e3a5f">Vanity — ${escapeHtml(scopeLabel)}</span>
+          <span class="tbl-count" style="background:#1e3a5f">${filtered.length} flats</span>
+        </div>
+        <div style="overflow-x:auto">${tableHtml}</div>
+      </div>
+      <div style="font-size:11px;color:#94a3b8;text-align:center;margin-top:8px">
+        Source: <a href="https://docs.google.com/spreadsheets/d/${escapeHtml(FILES.vanity)}/edit" target="_blank" style="color:#1d4ed8;text-decoration:none">VANITY</a>
+        · Use the Reload button at the top to refresh.
+      </div>`;
+    host.querySelectorAll('[data-kwgroup]').forEach(b => {
+      b.addEventListener('click', () => {
+        const g = b.dataset.kwgroup, k = b.dataset.kwkey;
+        if (g === 'tower')        { activeVanityTower = k; activeVanityColumn = 'all'; activeVanityStatus = 'all'; }
+        else if (g === 'column')  { activeVanityColumn = k; activeVanityStatus = 'all'; }
+        else if (g === 'status')    activeVanityStatus = k;
+        renderPurchasableTab();
+      });
+    });
+  } catch (e) {
+    host.innerHTML = `<div class="error"><strong>Failed to load:</strong> ${escapeHtml(e?.message || String(e))}</div>`;
+  }
+}
 const PURCHASABLE_SUBS = [
-  { key:'kitchen', label:'Commercial Kitchen', icon:'🍽️' },
-  { key:'watcon',  label:'Watcon (Pools & Spa)', icon:'💧' },
+  { key:'kitchen',  label:'Commercial Kitchen', icon:'🍽️' },
+  { key:'kw-kitchen', label:'Kitchen', icon:'🍳' },
+  { key:'kw-wardrobe', label:'Wardrobe', icon:'🚪' },
+  { key:'vanity',   label:'Vanity', icon:'🪞' },
+  { key:'watcon',   label:'Watcon (Pools & Spa)', icon:'💧' },
 ];
 function renderPurchasableTab() {
   const container = document.getElementById('tab-purchasable');
@@ -4702,6 +5214,9 @@ function renderPurchasableTab() {
     b.addEventListener('click', () => { activePurchasableSub = b.dataset.psub; renderPurchasableTab(); }));
   const body = container.querySelector('#purchasable-body');
   if (active.key === 'watcon') renderWatconInto(body);
+  else if (active.key === 'kw-kitchen')  renderKitchenWardrobeInto(body, 'kitchen');
+  else if (active.key === 'kw-wardrobe') renderKitchenWardrobeInto(body, 'wardrobe');
+  else if (active.key === 'vanity')      renderVanityInto(body);
   else renderCommercialKitchenInto(body);
 }
 
@@ -5867,6 +6382,8 @@ async function runHealthCheck() {
     { label:'Interior Execution',fileId: FILES.interior },
     { label:'Elevators',         fileId: FILES.elevators },
     { label:'Commercial Kitchen',fileId: FILES.commercialKitchen },
+    { label:'Kitchen & Wardrobe', fileId: FILES.kitchenWardrobe },
+    { label:'Vanity', fileId: FILES.vanity },
     { label:'Planner (Common/Watcon)', fileId: FILES.planner },
     ...PLUMBING_FILES.map(f => ({ label:`Plumbing – ${f.contractor}`, fileId: f.fileId })),
     ...MECHANICAL_FILES.map(f => ({ label:`Mechanical – ${f.contractor}`, fileId: f.fileId })),
