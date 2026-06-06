@@ -321,6 +321,7 @@ const FILES = {
   commercialKitchen: '1831xcw0P-qb1BKL1qtVUHwrLyC5TFLGGdlHUDSEIsEA',
   kitchenWardrobe: '11MghP-8uexAw292CoYSSKNoZswP1vpzgPNk8_huGrh4',
   vanity: '1lVaxVDsvSwkCPeD4Fzc2lCvrHYGgQB_IjiNGJyEdRxA',
+  doors: '1M7jIV1lz4lLtujr7Itz1AiSKuiZIKDA-7Y331lYo9LA',
   mepLabour:      '1dBfjaVVyud5AXhFK3a771p67134FQkOHIaRFGNeioJg',
   planner:        '1EsUx8Ez8-gjfLT5nf8MiOMqYlBubMRWnTl9dgi-7_R4',
   // Index of daily labour reports: columns → Date | Interior File ID | Facade File ID | MEP File ID
@@ -454,6 +455,11 @@ let activeVanityTower  = 'all';        // 'all' | 'TOWER-03' | …
 let activeVanityColumn = 'all';        // 'all' | a report column key (see VANITY_COLS)
 let activeVanityStatus = 'all';        // 'all' | 'done' | 'pending' | 'na' | 'hold'
 
+// Doors sub-tab (Purchasable Items)
+let activeDoorsTower  = 'all';         // 'all' | 'TOWER-01' | …
+let activeDoorsColumn = 'all';         // 'all' | a report column key (see DOOR_COLS)
+let activeDoorsStatus = 'all';         // 'all' | 'done' | 'pending' | 'na' | 'hold'
+
 // ─── HELPERS ──────────────────────────────────────────────
 function escapeHtml(s) {
   return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -540,6 +546,15 @@ const SHEET_TABS = {
     { gid: 880865469,  name: 'TOWER-04' },
     { gid: 1413428491, name: 'TOWER-05' },
     { gid: 486639692,  name: 'TOWER-06' },
+  ],
+  // Greenlam Doors — per-flat door pipeline, one tab per tower
+  '1M7jIV1lz4lLtujr7Itz1AiSKuiZIKDA-7Y331lYo9LA': [
+    { gid: 546508471,  name: 'TOWER-01' },
+    { gid: 1949419296, name: 'TOWER-02' },
+    { gid: 0,          name: 'TOWER-03' },
+    { gid: 248172457,  name: 'TOWER-04' },
+    { gid: 1713424421, name: 'TOWER-05' },
+    { gid: 1802446270, name: 'TOWER-06' },
   ],
   // Interior Execution — all contractor tabs
   '15WH66qd3e04ojvDhg7DQiWVDOLa9oDvo8LQDpJtQL_U': [
@@ -5195,11 +5210,192 @@ async function renderVanityInto(host) {
     host.innerHTML = `<div class="error"><strong>Failed to load:</strong> ${escapeHtml(e?.message || String(e))}</div>`;
   }
 }
+// ─── DOORS (Greenlam) ─────────────────────────────────────
+// Per-flat door pipeline, one tab per tower. Tower layouts differ (flat ID sits
+// in different columns; T3 uses bare unit numbers; "done" appears as TRUE or
+// DONE), so columns + the flat column are located by header name.
+const DOOR_COLS = [
+  { key:'frame',     label:'Frame Measurement', match:/door\s*frame\s*measurement/i },
+  { key:'delivered', label:'Door Delivered',    match:/door\s*delivered/i },
+  { key:'install',   label:'Door Installation', match:/door\s*installation/i },
+];
+function doorCellStatus(v) {
+  const s = String(v || '').trim().toUpperCase();
+  if (!s)                         return 'blank';
+  if (/HOLD/.test(s))             return 'hold';
+  if (s === 'TRUE' || s === 'DONE') return 'done';
+  if (s === 'NA' || s === 'N/A')  return 'na';
+  return 'pending';   // FALSE, "TO BE ORDRED", etc
+}
+function doorPill(v) {
+  const t = (v || '').trim();
+  if (!t) return `<span style="color:#cbd5e1">—</span>`;
+  const st = doorCellStatus(v);
+  if (st === 'done')    return `<span class="pill" style="background:#dcfce7;color:#16a34a">✓</span>`;
+  if (st === 'na')      return `<span class="pill" style="background:#f1f5f9;color:#64748b;font-size:9px">NA</span>`;
+  if (st === 'hold')    return `<span class="pill" style="background:#fee2e2;color:#dc2626;font-size:9px">HOLD</span>`;
+  if (/^false$/i.test(t)) return `<span class="pill" style="background:#f1f5f9;color:#94a3b8">✗</span>`;
+  return `<span class="pill" style="background:#fef3c7;color:#b45309;font-size:9px">${escapeHtml(t)}</span>`;
+}
+// Countable = a real flat-stage: excludes blank, NA, HOLD and sample flats.
+function doorCountable(row, colKey) {
+  const st = doorCellStatus(row.cells[colKey]);
+  if (st === 'blank' || st === 'na' || st === 'hold') return false;
+  if (/sample/i.test(row.phase || '') || /sample/i.test(row.remark || '')) return false;
+  return true;
+}
+function doorRowComplete(row) {
+  const keys = Object.keys(row.cells);
+  if (!keys.length) return false;
+  let anyDone = false;
+  for (const k of keys) {
+    const st = doorCellStatus(row.cells[k]);
+    if (st === 'pending' || st === 'hold' || st === 'blank') return false;
+    if (st === 'done') anyDone = true;
+  }
+  return anyDone;
+}
+function doorTowerPct(rows) {
+  const real = rows.filter(r => !/sample/i.test(r.phase || '') && !/^\s*hold/i.test(r.phase || ''));
+  if (!real.length) return '—';
+  const done = real.filter(doorRowComplete).length;
+  return Math.round(done / real.length * 100) + '% done';
+}
+// Parse one tower tab → [{flat, tower, phase, cells:{colKey:value}, remark}]
+function parseDoors(csv, towerName) {
+  const rows = _kwCsvRows(csv);
+  const tnum = ((towerName.match(/(\d+)/) || ['', '0'])[1]).padStart(2, '0');
+  let hIdx = rows.findIndex(r => r.some(c => /door\s*frame\s*measurement/i.test(c || '')));
+  if (hIdx < 0) return [];
+  const header = rows[hIdx].map(c => (c || '').trim());
+  const colIdx = {};
+  DOOR_COLS.forEach(col => { const j = header.findIndex(h => col.match.test(h)); if (j >= 0) colIdx[col.key] = j; });
+  // Flat column: the "Tower-0X" or "Unit No" header.
+  let flatIdx = header.findIndex(h => /tower-?\s*0?\d/i.test(h) || /unit\s*no/i.test(h));
+  if (flatIdx < 0) flatIdx = 1;
+  const remarkIdx = header.findIndex(h => /remark/i.test(h));
+  const out = [];
+  for (let i = hIdx + 1; i < rows.length; i++) {
+    const r = rows[i];
+    const raw = (r[flatIdx] || '').trim();
+    let flat = null;
+    if (/^\d{2,3}$/.test(raw)) flat = 'T' + tnum + '/' + raw;          // bare unit (T3)
+    else { const m = raw.match(/^T0?(\d)\s*\/?\s*(\d{2,3})$/i); if (m) flat = 'T0' + m[1] + '/' + m[2]; }
+    if (!flat) continue;
+    const cells = {};
+    Object.entries(colIdx).forEach(([k, j]) => { cells[k] = (r[j] || '').trim(); });
+    out.push({ flat, tower: towerName, phase: (r[0] || '').trim(), cells, remark: remarkIdx >= 0 ? (r[remarkIdx] || '').trim() : '' });
+  }
+  return out;
+}
+async function renderDoorsInto(host) {
+  host.innerHTML = `${liveBar('loading')}<div class="loading">⏳ Pulling Greenlam Doors sheet…</div>`;
+  try {
+    const doorTabs = SHEET_TABS[FILES.doors] || [];
+    const allRows = [];
+    for (const tab of doorTabs) {
+      const csv = await fetchSheetTabRaw(FILES.doors, tab.gid).catch(() => '');
+      if (!csv || !csv.trim()) continue;
+      allRows.push(...parseDoors(csv, tab.name));
+    }
+    if (allRows.length === 0) {
+      host.innerHTML = `<div class="error"><strong>No rows parsed.</strong> Make sure the Greenlam Doors sheet is shared "Anyone with the link → Viewer". (It is currently pulled only via the private Drive connector.)</div>`;
+      return;
+    }
+    const towerNames = doorTabs.map(t => t.name);
+    if (activeDoorsTower !== 'all' && !towerNames.includes(activeDoorsTower)) activeDoorsTower = 'all';
+    const towerRows = activeDoorsTower === 'all' ? allRows : allRows.filter(r => r.tower === activeDoorsTower);
+    const presentCols = DOOR_COLS.filter(col => towerRows.some(r => col.key in r.cells));
+    if (activeDoorsColumn !== 'all' && !presentCols.some(c => c.key === activeDoorsColumn)) {
+      activeDoorsColumn = 'all'; activeDoorsStatus = 'all';
+    }
+    if (activeDoorsColumn === 'all') activeDoorsStatus = 'all';
+    const colScopeRows = activeDoorsColumn === 'all' ? [] : towerRows.filter(r => activeDoorsColumn in r.cells);
+    const stCounts = { all: colScopeRows.length };
+    VANITY_STATUSES.forEach(s => { stCounts[s.key] = 0; });
+    colScopeRows.forEach(r => { stCounts[doorCellStatus(r.cells[activeDoorsColumn])] = (stCounts[doorCellStatus(r.cells[activeDoorsColumn])]||0) + 1; });
+    let filtered = towerRows;
+    if (activeDoorsColumn !== 'all') filtered = filtered.filter(r => activeDoorsColumn in r.cells);
+    if (activeDoorsStatus !== 'all') filtered = filtered.filter(r => doorCellStatus(r.cells[activeDoorsColumn]) === activeDoorsStatus);
+    // ── Cards ──
+    const towerCards = `<div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:0 0 4px 2px">📍 Tower</div><div class="cards" style="overflow-x:auto;flex-wrap:nowrap;padding-bottom:6px">
+      ${kwColorCard('tower','all','All Towers',allRows.length,activeDoorsTower==='all',{ c:'#1e3a5f', activeBg:'#e0e7ff', ring:'#c7d2fe' }, doorTowerPct(allRows))}
+      ${towerNames.map(t => { const tr = allRows.filter(r => r.tower === t); return kwColorCard('tower', t, t, tr.length, activeDoorsTower === t, { c:'#7c3aed', activeBg:'#f3e8ff', ring:'#e9d5ff' }, doorTowerPct(tr)); }).join('')}
+    </div>`;
+    const colCards = `<div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:10px 0 4px 2px">🚪 Report column · ${presentCols.length} in scope</div><div class="cards" style="overflow-x:auto;flex-wrap:nowrap;padding-bottom:6px">
+      ${kwColorCard('column','all','All Columns',towerRows.length,activeDoorsColumn==='all',{ c:'#1e3a5f', activeBg:'#e0e7ff', ring:'#c7d2fe' })}
+      ${presentCols.map(col => {
+        const applicable = towerRows.filter(r => col.key in r.cells && doorCountable(r, col.key));
+        const done = applicable.filter(r => doorCellStatus(r.cells[col.key]) === 'done').length;
+        return kwColorCard('column', col.key, col.label, done, activeDoorsColumn === col.key, { c:'#0e7490', activeBg:'#cffafe', ring:'#a5f3fc' }, `of ${applicable.length} done`);
+      }).join('')}
+    </div>`;
+    const statusCards = activeDoorsColumn === 'all' ? '' :
+      `<div style="font-size:10px;font-weight:700;color:#0e7490;letter-spacing:1px;text-transform:uppercase;margin:8px 0 4px 14px">↳ ${escapeHtml((DOOR_COLS.find(c=>c.key===activeDoorsColumn)||{}).label)} status</div><div class="cards" style="overflow-x:auto;flex-wrap:nowrap;padding-bottom:6px;margin-left:12px">
+        ${kwColorCard('status','all','All',stCounts.all,activeDoorsStatus==='all',{ c:'#1e3a5f', activeBg:'#e0e7ff', ring:'#c7d2fe' })}
+        ${VANITY_STATUSES.map(s => kwColorCard('status', s.key, s.label, stCounts[s.key]||0, activeDoorsStatus===s.key, s)).join('')}
+      </div>`;
+    // ── Table ──
+    const hasRemark = filtered.some(r => r.remark);
+    const colHeads = presentCols.map(c => `<th style="text-align:center;font-size:10px">${escapeHtml(c.label)}</th>`).join('');
+    const tableHtml = filtered.length === 0
+      ? `<div class="empty">No flats match these filters.</div>`
+      : `<table style="min-width:${380 + presentCols.length*110}px">
+          <thead><tr>
+            <th>#</th><th>Flat</th><th>Phase</th>
+            ${colHeads}
+            ${hasRemark ? '<th>Remark</th>' : ''}
+          </tr></thead>
+          <tbody>${filtered.map((r,i) => `<tr>
+            <td>${i+1}</td>
+            <td style="font-family:monospace;font-weight:700;color:#1e3a5f">${escapeHtml(r.flat)}</td>
+            <td style="font-size:10px;color:#64748b">${escapeHtml(r.phase||'—')}</td>
+            ${presentCols.map(c => `<td style="text-align:center">${c.key in r.cells ? doorPill(r.cells[c.key]) : '<span style="color:#cbd5e1">—</span>'}</td>`).join('')}
+            ${hasRemark ? `<td style="font-size:11px;color:#64748b">${escapeHtml(r.remark||'')}</td>` : ''}
+          </tr>`).join('')}</tbody>
+        </table>`;
+    const scopeParts = [];
+    if (activeDoorsTower !== 'all')  scopeParts.push(activeDoorsTower);
+    if (activeDoorsColumn !== 'all') scopeParts.push((DOOR_COLS.find(c=>c.key===activeDoorsColumn)||{}).label);
+    if (activeDoorsStatus !== 'all') scopeParts.push((VANITY_STATUSES.find(s=>s.key===activeDoorsStatus)||{}).label);
+    const scopeLabel = scopeParts.length === 0 ? 'All flats' : scopeParts.join(' · ');
+    host.innerHTML = `
+      ${liveBar('live', allRows.length, 'GREENLAM DOORS.xlsx')}
+      ${towerCards}
+      ${colCards}
+      ${statusCards}
+      <div style="font-size:11px;color:#64748b;margin:8px 0">Showing: <strong>${escapeHtml(scopeLabel)}</strong></div>
+      <div class="tbl-wrap" style="margin-top:8px">
+        <div class="tbl-head" style="background:#eff6ff;border-bottom:1px solid #bfdbfe">
+          <span>🚪</span>
+          <span class="tbl-title" style="color:#1e3a5f">Greenlam Doors — ${escapeHtml(scopeLabel)}</span>
+          <span class="tbl-count" style="background:#1e3a5f">${filtered.length} flats</span>
+        </div>
+        <div style="overflow-x:auto">${tableHtml}</div>
+      </div>
+      <div style="font-size:11px;color:#94a3b8;text-align:center;margin-top:8px">
+        Source: <a href="https://docs.google.com/spreadsheets/d/${escapeHtml(FILES.doors)}/edit" target="_blank" style="color:#1d4ed8;text-decoration:none">GREENLAM DOORS</a>
+        · Use the Reload button at the top to refresh.
+      </div>`;
+    host.querySelectorAll('[data-kwgroup]').forEach(b => {
+      b.addEventListener('click', () => {
+        const g = b.dataset.kwgroup, k = b.dataset.kwkey;
+        if (g === 'tower')        { activeDoorsTower = k; activeDoorsColumn = 'all'; activeDoorsStatus = 'all'; }
+        else if (g === 'column')  { activeDoorsColumn = k; activeDoorsStatus = 'all'; }
+        else if (g === 'status')    activeDoorsStatus = k;
+        renderPurchasableTab();
+      });
+    });
+  } catch (e) {
+    host.innerHTML = `<div class="error"><strong>Failed to load:</strong> ${escapeHtml(e?.message || String(e))}</div>`;
+  }
+}
 const PURCHASABLE_SUBS = [
   { key:'kitchen',  label:'Commercial Kitchen', icon:'🍽️' },
   { key:'kw-kitchen', label:'Kitchen', icon:'🍳' },
   { key:'kw-wardrobe', label:'Wardrobe', icon:'🚪' },
   { key:'vanity',   label:'Vanity', icon:'🪞' },
+  { key:'doors',    label:'Doors', icon:'🚪' },
   { key:'watcon',   label:'Watcon (Pools & Spa)', icon:'💧' },
 ];
 function renderPurchasableTab() {
@@ -5217,6 +5413,7 @@ function renderPurchasableTab() {
   else if (active.key === 'kw-kitchen')  renderKitchenWardrobeInto(body, 'kitchen');
   else if (active.key === 'kw-wardrobe') renderKitchenWardrobeInto(body, 'wardrobe');
   else if (active.key === 'vanity')      renderVanityInto(body);
+  else if (active.key === 'doors')       renderDoorsInto(body);
   else renderCommercialKitchenInto(body);
 }
 
@@ -6384,6 +6581,7 @@ async function runHealthCheck() {
     { label:'Commercial Kitchen',fileId: FILES.commercialKitchen },
     { label:'Kitchen & Wardrobe', fileId: FILES.kitchenWardrobe },
     { label:'Vanity', fileId: FILES.vanity },
+    { label:'Greenlam Doors', fileId: FILES.doors },
     { label:'Planner (Common/Watcon)', fileId: FILES.planner },
     ...PLUMBING_FILES.map(f => ({ label:`Plumbing – ${f.contractor}`, fileId: f.fileId })),
     ...MECHANICAL_FILES.map(f => ({ label:`Mechanical – ${f.contractor}`, fileId: f.fileId })),
