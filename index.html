@@ -406,6 +406,13 @@ const STATUS_TABS = [
   { key:'delay', label:'Delayed',      icon:'🔴', color:'#dc2626', bg:'#fef2f2', border:'#fca5a5', desc:'Past due / blocked' },
   { key:'pending', label:'Pending',    icon:'🕐', color:'#b45309', bg:'#fffbeb', border:'#fcd34d', desc:'Not started' },
 ];
+// Interior Execution adds an "On Schedule" bucket — rows with a live (today/future) date.
+const INTERIOR_STATUS_TABS = [
+  { key:'done',        label:'Done',        icon:'✅', color:'#16a34a', bg:'#f0fdf4', border:'#86efac', desc:'Completed' },
+  { key:'on-schedule', label:'On Schedule', icon:'📅', color:'#2563eb', bg:'#eff6ff', border:'#93c5fd', desc:'Dated / scheduled' },
+  { key:'delay',       label:'Delayed',     icon:'🔴', color:'#dc2626', bg:'#fef2f2', border:'#fca5a5', desc:'Past due / blocked' },
+  { key:'pending',     label:'Pending',     icon:'🕐', color:'#b45309', bg:'#fffbeb', border:'#fcd34d', desc:'No date yet' },
+];
 const TENDER_TABS = [
   { key:'done',    label:'Awarded / Done', icon:'✅', color:'#16a34a', bg:'#f0fdf4', border:'#86efac', desc:'Completed' },
   { key:'pending', label:'Pending',        icon:'🕐', color:'#b45309', bg:'#fffbeb', border:'#fcd34d', desc:'Not started / In Progress' },
@@ -1643,6 +1650,21 @@ function _isPastDateCell(v) {
   const today = new Date(); today.setHours(0,0,0,0);
   return dt < today;
 }
+// True when the cell is an actual date that is today or in the future (a live
+// schedule). Used by Interior Execution for the "On Schedule" bucket.
+function _isFutureDateCell(v) {
+  const raw = (v || '').trim();
+  const MONTHS = { jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11 };
+  const dm = raw.match(/^(\d{1,2})[-\s]([a-zA-Z]+)(?:[-\s](\d{2,4}))?$/);
+  if (!dm) return false;
+  const mon = MONTHS[(dm[2]||'').slice(0,3).toLowerCase()];
+  if (mon === undefined) return false;
+  const yr = dm[3] ? (dm[3].length===2 ? 2000+parseInt(dm[3]) : parseInt(dm[3])) : new Date().getFullYear();
+  const dt = new Date(yr, mon, parseInt(dm[1]));
+  dt.setHours(0,0,0,0);
+  const today = new Date(); today.setHours(0,0,0,0);
+  return dt >= today;
+}
 
 // ─── FHC Lacquered Door — per-tower parser ──────────────────────────────────
 // Tracks 3 key stages per floor: Granite Fixing, Final Sizes, Door Installation.
@@ -2759,12 +2781,15 @@ function parseInteriorExecution(md, contractorTag, defaultTower) {
       if (u === 'TRUE' || u === 'FALSE' || u === 'NA' || s === '') return false;
       return _isPastDateCell(s); // only overdue dated cells → delay
     });
+    // Scheduled (today/future) dated cells → "On Schedule"; undated rows → Pending.
+    const scheduleNotes = states.filter(s => _isFutureDateCell(s));
     const totalReal = stageIdxs.length - naCount;
     let status;
     if (totalReal > 0 && trueCount === totalReal) status = 'done';
-    else if (delayNotes.length > 0) status = 'delay';
-    else status = 'pending';
-    const remark = delayNotes.slice(0, 3).join('; ');
+    else if (delayNotes.length > 0)               status = 'delay';
+    else if (scheduleNotes.length > 0)            status = 'on-schedule';
+    else                                          status = 'pending';
+    const remark = (status === 'on-schedule' ? scheduleNotes : delayNotes).slice(0, 3).join('; ');
     items.push({
       contractor,
       tower,
@@ -3993,15 +4018,20 @@ async function renderWork() {
         breadcrumb += ' · Railing/Glass Done';
       }
     }
+    // Interior Execution has an extra "On Schedule" status bucket + card.
+    const statusTabsForSub = activeWorkSub === 'interior' ? INTERIOR_STATUS_TABS : STATUS_TABS;
     // counts and filtered are computed AFTER all filters (including glass stage)
-    const counts = { done:0, delay:0, pending:0 };
-    items.forEach(it => counts[it.status]++);
-    const tab = STATUS_TABS.find(t => t.key === activeWorkStatus);
+    const counts = {};
+    statusTabsForSub.forEach(t => { counts[t.key] = 0; });
+    items.forEach(it => { if (it.status in counts) counts[it.status]++; });
+    // If the active status card isn't valid for this sub-tab, fall back to 'done'.
+    if (!statusTabsForSub.some(t => t.key === activeWorkStatus)) activeWorkStatus = 'done';
+    const tab = statusTabsForSub.find(t => t.key === activeWorkStatus);
     // In sqft mode (Baffle Ceiling) show ALL towers regardless of status —
     // the % column is the status indicator; no status card filtering needed.
     const filtered = isSqftMode ? items : items.filter(it => it.status === activeWorkStatus);
-    const pillStyles = { done:'background:#dcfce7;color:#16a34a', delay:'background:#fee2e2;color:#dc2626', pending:'background:#fef3c7;color:#b45309' };
-    const pillText = { done:'Done', delay:'Delayed / Partial', pending:'Pending' };
+    const pillStyles = { done:'background:#dcfce7;color:#16a34a', delay:'background:#fee2e2;color:#dc2626', pending:'background:#fef3c7;color:#b45309', 'on-schedule':'background:#dbeafe;color:#2563eb' };
+    const pillText = { done:'Done', delay:'Delayed / Partial', pending:'Pending', 'on-schedule':'On Schedule' };
     const cap = 300;
     const display = filtered.slice(0, cap);
     // Hide the Item/Contractor column when filtered to a single item
@@ -4168,7 +4198,7 @@ async function renderWork() {
       ${glassStageNav}
       ${stagePctSummaryHtml}
       ${interiorStageSummaryHtml}
-      ${isSqftMode ? '' : statusCardsHtml(STATUS_TABS, counts, activeWorkStatus)}
+      ${isSqftMode ? '' : statusCardsHtml(statusTabsForSub, counts, activeWorkStatus)}
       <div class="tbl-wrap" style="border-color:${tab.border}">
         <div class="tbl-head" style="background:${tab.bg};border-bottom:1px solid ${tab.border}">
           <span>${tab.icon}</span>
