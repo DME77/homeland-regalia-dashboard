@@ -5034,11 +5034,13 @@ const KW_SHOWN = [
 ];
 // Summary buckets — keyed off the requested milestones (Measurement →
 // Carcass Delivered → Installation), plus Not-Started and Blocked.
+// Ordered in pipeline sequence: Not Started → Measured → Carcass Delivered →
+// Installed (so the status cards read left-to-right in the real work order).
 const KW_STATUSES = [
-  { key:'installed',  label:'Installed',        c:'#16a34a', activeBg:'#dcfce7', ring:'#86efac' },
-  { key:'carcass',    label:'Carcass Delivered',c:'#1d4ed8', activeBg:'#dbeafe', ring:'#93c5fd' },
-  { key:'measured',   label:'Measured',         c:'#b45309', activeBg:'#fef3c7', ring:'#fde68a' },
   { key:'notstarted', label:'Not Started',      c:'#475569', activeBg:'#f1f5f9', ring:'#cbd5e1' },
+  { key:'measured',   label:'Measured',         c:'#b45309', activeBg:'#fef3c7', ring:'#fde68a' },
+  { key:'carcass',    label:'Carcass Delivered',c:'#1d4ed8', activeBg:'#dbeafe', ring:'#93c5fd' },
+  { key:'installed',  label:'Installed',        c:'#16a34a', activeBg:'#dcfce7', ring:'#86efac' },
   { key:'blocked',    label:'Hold / No Consent',c:'#dc2626', activeBg:'#fee2e2', ring:'#fca5a5' },
 ];
 const KW_STATUS_STYLE = Object.fromEntries(KW_STATUSES.map(s => [s.key, { bg:s.activeBg, c:s.c }]));
@@ -5160,16 +5162,14 @@ async function renderKitchenWardrobeInto(host, scope) {
     }
     const towerNames = kwTabs.map(t => t.name);
     if (activeKwTower !== 'all' && !towerNames.includes(activeKwTower)) activeKwTower = 'all';
-    // Tower scope
-    const towerRows = activeKwTower === 'all' ? allRows : allRows.filter(r => r.tower === activeKwTower);
-    // Real vendors only (the HOLD / NO CONSENT / SAMPLE markers are grouped into
-    // a single "Not Ordered" card with its own breakdown sub-filters).
+    // ── Drill-down: Vendor (top) → Tower/Units → Status ──
+    // Vendor list is top-level now, so it's built from ALL rows.
     const vendorList = [];
     { const seen = new Set();
-      towerRows.forEach(r => { const v = (r.vendor || '').trim();
+      allRows.forEach(r => { const v = (r.vendor || '').trim();
         if (v && kwVendorKind(v) === 'real' && !seen.has(v)) { seen.add(v); vendorList.push(v); } }); }
     vendorList.sort();
-    const notOrderedRows = towerRows.filter(r => kwVendorKind(r.vendor) !== 'real');
+    const notOrderedRows = allRows.filter(r => kwVendorKind(r.vendor) !== 'real');
     const noCounts = { all: notOrderedRows.length };
     KW_NOT_ORDERED.forEach(s => { noCounts[s.key] = 0; });
     notOrderedRows.forEach(r => { noCounts[kwVendorKind(r.vendor)]++; });
@@ -5178,27 +5178,40 @@ async function renderKitchenWardrobeInto(host, scope) {
       activeKwVendor = 'all'; activeKwNotOrdered = 'all';
     }
     if (activeKwVendor !== 'not-ordered') activeKwNotOrdered = 'all';
+    // Vendor scope
     let vendorRows;
-    if (activeKwVendor === 'all')              vendorRows = towerRows;
+    if (activeKwVendor === 'all')              vendorRows = allRows;
     else if (activeKwVendor === 'not-ordered') vendorRows = activeKwNotOrdered === 'all'
                                                  ? notOrderedRows
                                                  : notOrderedRows.filter(r => kwVendorKind(r.vendor) === activeKwNotOrdered);
-    else                                       vendorRows = towerRows.filter(r => (r.vendor || '').trim() === activeKwVendor);
-    // Status counts (within tower+vendor scope)
-    const counts = { all: vendorRows.length };
-    KW_STATUSES.forEach(s => { counts[s.key] = 0; });
-    vendorRows.forEach(r => { counts[r.status]++; });
-    // Apply status filter
-    let filtered = vendorRows;
-    if (statusVar() !== 'all') filtered = filtered.filter(r => r.status === statusVar());
-    // ── Cards ──
-    const towerCards = `<div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:0 0 4px 2px">📍 Tower</div><div class="cards" style="overflow-x:auto;flex-wrap:nowrap;padding-bottom:6px">
-      ${kwColorCard('tower','all','All Towers',allRows.length,activeKwTower==='all',{ c:'#1e3a5f', activeBg:'#e0e7ff', ring:'#c7d2fe' }, kwTowerPct(allRows))}
-      ${towerNames.map(t => { const tr = allRows.filter(r => r.tower === t); return kwColorCard('tower', t, t, tr.length, activeKwTower === t, { c:'#7c3aed', activeBg:'#f3e8ff', ring:'#e9d5ff' }, kwTowerPct(tr)); }).join('')}
-    </div>`;
-    const vendorCards = `<div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:10px 0 4px 2px">🏷️ Vendor · ${vendorList.length} ordered + Not Ordered</div><div class="cards" style="overflow-x:auto;flex-wrap:nowrap;padding-bottom:6px">
-      ${kwColorCard('vendor','all','All Vendors',towerRows.length,activeKwVendor==='all',{ c:'#1e3a5f', activeBg:'#e0e7ff', ring:'#c7d2fe' })}
-      ${vendorList.map(v => kwColorCard('vendor', v, v, towerRows.filter(r => (r.vendor||'').trim() === v).length, activeKwVendor === v, { c:'#0e7490', activeBg:'#cffafe', ring:'#a5f3fc' })).join('')}
+    else                                       vendorRows = allRows.filter(r => (r.vendor || '').trim() === activeKwVendor);
+    // Tower is independent (works with or without a vendor); status only shows once a tower is picked.
+    const scopedRows = activeKwTower === 'all' ? vendorRows : vendorRows.filter(r => r.tower === activeKwTower);
+    if (activeKwTower === 'all') setStatus('all');
+    // Status counts — CUMULATIVE per milestone (a flat counts toward every stage
+    // it has completed, not just its furthest one). Only flats with a real
+    // boolean Measurement cell count; NA / DIS. APPROVED / SAMPLE / blank are excluded.
+    const isRealBool = v => { const u = String(v || '').trim().toUpperCase(); return u === 'TRUE' || u === 'FALSE'; };
+    const countableRows = scopedRows.filter(r => isRealBool(r.cells[1]));   // idx1 = Measurement
+    const counts = {
+      all:        countableRows.length,
+      measured:   countableRows.filter(r => _kwTruthy(r.cells[1])).length,
+      carcass:    countableRows.filter(r => _kwTruthy(r.cells[3])).length,  // idx3 = Carcass Delivered
+      installed:  countableRows.filter(r => _kwTruthy(r.cells[4])).length,  // idx4 = Installation
+      notstarted: countableRows.filter(r => !_kwTruthy(r.cells[1])).length,
+    };
+    // Apply status filter (milestone-based — "Measured" = every measured flat, etc.)
+    const sv = statusVar();
+    let filtered;
+    if      (sv === 'measured')   filtered = countableRows.filter(r => _kwTruthy(r.cells[1]));
+    else if (sv === 'carcass')    filtered = countableRows.filter(r => _kwTruthy(r.cells[3]));
+    else if (sv === 'installed')  filtered = countableRows.filter(r => _kwTruthy(r.cells[4]));
+    else if (sv === 'notstarted') filtered = countableRows.filter(r => !_kwTruthy(r.cells[1]));
+    else                          filtered = scopedRows;   // 'all' shows every flat (incl. excluded, for reference)
+    // ── Cards (drill-down: Vendor → Tower → Status) ──
+    const vendorCards = `<div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:0 0 4px 2px">🏷️ Vendor · ${vendorList.length} ordered + Not Ordered</div><div class="cards" style="overflow-x:auto;flex-wrap:nowrap;padding-bottom:6px">
+      ${kwColorCard('vendor','all','All Vendors',allRows.length,activeKwVendor==='all',{ c:'#1e3a5f', activeBg:'#e0e7ff', ring:'#c7d2fe' })}
+      ${vendorList.map(v => kwColorCard('vendor', v, v, allRows.filter(r => (r.vendor||'').trim() === v).length, activeKwVendor === v, { c:'#0e7490', activeBg:'#cffafe', ring:'#a5f3fc' })).join('')}
       ${kwColorCard('vendor','not-ordered','Not Ordered',noCounts.all,activeKwVendor==='not-ordered',{ c:'#dc2626', activeBg:'#fee2e2', ring:'#fca5a5' })}
     </div>`;
     // Breakdown sub-filters — only shown when "Not Ordered" is selected.
@@ -5207,13 +5220,20 @@ async function renderKitchenWardrobeInto(host, scope) {
         ${kwColorCard('notordered','all','All',noCounts.all,activeKwNotOrdered==='all',{ c:'#1e3a5f', activeBg:'#e0e7ff', ring:'#c7d2fe' })}
         ${KW_NOT_ORDERED.map(s => kwColorCard('notordered', s.key, s.label, noCounts[s.key]||0, activeKwNotOrdered===s.key, s)).join('')}
       </div>`;
-    // Note: the 'blocked' (Hold / No Consent) bucket is intentionally omitted
-    // from the status cards — those flats are surfaced via the "Not Ordered"
-    // vendor grouping instead. They still appear in "All" and in the table pill.
-    const statusCards = `<div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:10px 0 4px 2px">${scopeIcon} ${escapeHtml(scopeTitle)} status</div><div class="cards" style="overflow-x:auto;flex-wrap:nowrap;padding-bottom:6px">
-      ${kwColorCard('status','all','All',counts.all,statusVar()==='all',{ c:'#1e3a5f', activeBg:'#e0e7ff', ring:'#c7d2fe' })}
-      ${KW_STATUSES.filter(s => s.key !== 'blocked').map(s => kwColorCard('status', s.key, s.label, counts[s.key]||0, statusVar()===s.key, s)).join('')}
-    </div>`;
+    // Tower / Units cards — always visible (scoped to the selected vendor, or all
+    // vendors when none is picked) so a full tower can be checked directly.
+    const towerCards =
+      `<div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:10px 0 4px 2px">📍 Tower / Units</div><div class="cards" style="overflow-x:auto;flex-wrap:nowrap;padding-bottom:6px">
+        ${kwColorCard('tower','all','All Units',vendorRows.length,activeKwTower==='all',{ c:'#1e3a5f', activeBg:'#e0e7ff', ring:'#c7d2fe' }, kwTowerPct(vendorRows))}
+        ${towerNames.map(t => { const tr = vendorRows.filter(r => r.tower === t); return tr.length ? kwColorCard('tower', t, t, tr.length, activeKwTower === t, { c:'#7c3aed', activeBg:'#f3e8ff', ring:'#e9d5ff' }, kwTowerPct(tr)) : ''; }).join('')}
+      </div>`;
+    // Status cards — only after a tower/unit is chosen; counts shown out of total units.
+    // ('blocked' = Hold / No Consent is omitted; surfaced via "Not Ordered" instead.)
+    const statusCards = activeKwTower === 'all' ? '' :
+      `<div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:10px 0 4px 2px">${scopeIcon} ${escapeHtml(scopeTitle)} status · out of ${counts.all} units</div><div class="cards" style="overflow-x:auto;flex-wrap:nowrap;padding-bottom:6px">
+        ${kwColorCard('status','all','All',counts.all,statusVar()==='all',{ c:'#1e3a5f', activeBg:'#e0e7ff', ring:'#c7d2fe' })}
+        ${KW_STATUSES.filter(s => s.key !== 'blocked').map(s => kwColorCard('status', s.key, s.label, counts[s.key]||0, statusVar()===s.key, s, `of ${counts.all} units`)).join('')}
+      </div>`;
     // ── Table (single scope · 3 milestone columns) ──
     const stageHeads = KW_SHOWN.map(s => `<th style="text-align:center;font-size:10px" title="${escapeHtml(s.full)}">${escapeHtml(s.label)}</th>`).join('');
     const tableHtml = filtered.length === 0
@@ -5239,9 +5259,9 @@ async function renderKitchenWardrobeInto(host, scope) {
     const scopeLabel = scopeParts.length === 0 ? 'All flats' : scopeParts.join(' · ');
     host.innerHTML = `
       ${liveBar('live', allRows.length, 'KITCHEN & WARDROBE.xlsx')}
-      ${towerCards}
       ${vendorCards}
       ${notOrderedCards}
+      ${towerCards}
       ${statusCards}
       <div style="font-size:11px;color:#64748b;margin:8px 0">Showing: <strong>${escapeHtml(scopeLabel)}</strong></div>
       <div class="tbl-wrap" style="margin-top:8px">
@@ -5259,10 +5279,10 @@ async function renderKitchenWardrobeInto(host, scope) {
     host.querySelectorAll('[data-kwgroup]').forEach(b => {
       b.addEventListener('click', () => {
         const g = b.dataset.kwgroup, k = b.dataset.kwkey;
-        if (g === 'tower')         { activeKwTower = k; activeKwVendor = 'all'; activeKwNotOrdered = 'all'; }
-        else if (g === 'vendor')   { activeKwVendor = k; if (k !== 'not-ordered') activeKwNotOrdered = 'all'; }
-        else if (g === 'notordered') activeKwNotOrdered = k;
-        else if (g === 'status')     setStatus(k);
+        if (g === 'vendor')          { activeKwVendor = k; activeKwTower = 'all'; setStatus('all'); if (k !== 'not-ordered') activeKwNotOrdered = 'all'; }
+        else if (g === 'notordered') { activeKwNotOrdered = k; activeKwTower = 'all'; setStatus('all'); }
+        else if (g === 'tower')      { activeKwTower = k; setStatus('all'); }
+        else if (g === 'status')       setStatus(k);
         renderPurchasableTab();
       });
     });
@@ -5324,11 +5344,15 @@ function vanityFlatExcluded(row) {
 }
 // Whether a flat's toilet cell counts as a real toilet for the totals.
 // Counts blank / FALSE / TRUE / partial-hold-text (a real toilet, just not done);
-// excludes only NA cells and cells in excluded (sample / fully-hold) flats.
+// excludes NA and "Not Delivered" cells (that vanity isn't on site for this flat),
+// and any cell in an excluded (sample / fully-hold) flat.
 function vanityCountable(row, colKey) {
   if (!(colKey in row.cells)) return false;
   if (vanityFlatExcluded(row)) return false;
-  return String(row.cells[colKey] || '').trim().toUpperCase() !== 'NA';
+  const u = String(row.cells[colKey] || '').trim().toUpperCase();
+  if (u === 'NA' || u === 'N/A') return false;
+  if (/^NOT\s*DELIVER/.test(u)) return false;   // "Not Delivered" → exclude like NA
+  return true;
 }
 // A flat is "complete" when every present report column is done or N/A, with ≥1 done.
 function vanityRowComplete(cells) {
