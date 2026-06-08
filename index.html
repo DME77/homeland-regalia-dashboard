@@ -312,7 +312,7 @@ const FILES = {
   interiorLabour: '1cqc7M8OjL_23iGk4nUNyNf4GLkxUbimb9PZoOGn-6MI',
   facadeLabour:   '1XQ3T6xlbgMDVf6EW5tyy57YuEjSzdjJoeeBGZX99WLg',
   waterproof:     '1MoE-MyuIGQ1BhWFnFTwjcWhcwcglkjkK4BR9wx3oBOo',
-  drawings:       '16-bEMatI3jJ8PGa86S0uOzLo_IkuwXrZN69L3xFRP2M',
+  drawings:       '1gcBXrpnX5254HViYX-EwWqsWli51MAvDWZcZUQC4i5g',
   civil:          '1fjIGtmCXMPE2vfIyvNODrn8HReVw1aPqY3iNLsSuxQQ',
   civilFacade:    '1TSgRRwur-HGjuOK3XlxlbOBiEUkYmniHcKldo-xFq80',
   landscape:      '1ICmK_vcCTczSbNbTrEGg3f72wWilx8_NrsepsxSceZs',
@@ -525,6 +525,10 @@ function unwrapMcp(res) {
 // To find a tab's GID: open the sheet, click the tab — the URL fragment becomes
 // "#gid=NNNNNNN". Copy that number.
 const SHEET_TABS = {
+  // DWG status — "Final list" tab (Dependency 1 / Timeline / Status)
+  '1gcBXrpnX5254HViYX-EwWqsWli51MAvDWZcZUQC4i5g': [
+    { gid: 1759871205, name: 'Final list' },
+  ],
   // PLANNER HLR — Common areas (tab 0) + Watcon
   '1EsUx8Ez8-gjfLT5nf8MiOMqYlBubMRWnTl9dgi-7_R4': [
     { gid: 0,          name: 'COMMON AREAS' },
@@ -2975,63 +2979,68 @@ function parseLandscapeCivil(md, contractorTag, defaultTower) {
 // Drawings Status — section-grouped pending-drawings tracker.
 // Layout: header row (Sr.no. | desc | Submitted by | Dependency | Status | Remarks) followed by
 // alternating section markers (`|  | TOWER-1 |...`) and data rows. Tower-6 onward drops the Remarks column.
+// DWG "Final list" tab: | (idx) | Sr.no. | Required Drawings | Submitted by |
+// Dependency 1 | Dependency 2 | Timeline | Status | Remarks | Updated by | Issue date
+// Columns are located by header name so layout shifts don't break it.
 function parseDrawings(md) {
   const lines = splitTableRows(md);
   const items = [];
-  let curSection = '';
-  let curTower = 'OTHER';
-  let foundHeader = false;
-  function inferTower(section) {
-    if (!section) return 'OTHER';
-    const s = section.toUpperCase();
-    const m = s.match(/TOWER\s*-?\s*(\d)/);
+  function inferTower(s) {
+    const u = (s || '').toUpperCase();
+    const m = u.match(/\bT-?\s*0?(\d)\b/) || u.match(/TOWER\s*-?\s*(\d)/);
     if (m) return 'T' + m[1];
-    if (/BASEMENT|STILT/.test(s)) return 'BSMT';
-    if (/CLUB|COMM|LANDSCAPE|GROUND|COMMON/.test(s)) return 'COMM';
+    if (/BASEMENT|\bB1\b|\bB2\b|\bUB\b|\bLB\b|STILT/.test(u)) return 'BSMT';
+    if (/CLUB|COMM|LANDSCAPE|GROUND|POOL|SPA|OVAL|TERRACE/.test(u)) return 'COMM';
     return 'OTHER';
   }
+  let idx = null;
   for (const line of lines) {
-    const c = parseRow(line);
-    // Main header: col 0 contains "SR.NO" OR col 1 contains "Pending DWG"
-    if ((c[0] && /SR\.?\s*NO/i.test(c[0])) || (c[1] && /pending\s*dwg/i.test(c[1]))) {
-      foundHeader = true;
+    const c = parseRow(line).map(x => (x || '').trim());
+    if (!idx) {
+      if (c.some(h => /required\s*drawings/i.test(h))) {
+        idx = {
+          drawing:   c.findIndex(h => /required\s*drawings/i.test(h)),
+          submitted: c.findIndex(h => /submitted\s*by/i.test(h)),
+          dep1:      c.findIndex(h => /dependency\s*1/i.test(h)),
+          dep2:      c.findIndex(h => /dependency\s*2/i.test(h)),
+          timeline:  c.findIndex(h => /timeline/i.test(h)),
+          status:    c.findIndex(h => /^status/i.test(h)),
+          remarks:   c.findIndex(h => /remark/i.test(h)),
+        };
+      }
       continue;
     }
-    // Section marker: col 0 empty, col 1 has TOWER/BASEMENT/STILT/AREA name
-    const cleanC1 = (c[1]||'').trim();
-    const isSectionRow = !((c[0]||'').trim()) && cleanC1 && /TOWER|BASEMENT|STILT|AREA/i.test(cleanC1);
-    if (isSectionRow) {
-      curSection = cleanC1;
-      curTower = inferTower(cleanC1);
-      continue;
-    }
-    if (!foundHeader) continue;
-    const sno  = (c[0]||'').trim();
-    const desc = (c[1]||'').trim();
-    if (!sno || !desc || isNaN(parseInt(sno))) continue;
-    const submittedBy = (c[2]||'').trim();
-    const dependency  = (c[3]||'').trim();
-    const status      = (c[4]||'').trim();
-    const remarks     = (c[5]||'').trim();
+    const get = k => (idx[k] >= 0 ? (c[idx[k]] || '').trim() : '');
+    const desc = get('drawing');
+    if (!desc) continue;
+    if (/priority\s*\d/i.test(c.join(' '))) continue;   // skip the colour-legend rows
+    const dep1 = get('dep1'), dep2 = get('dep2'), timeline = get('timeline');
+    const statusRaw = get('status'), remarks = get('remarks'), submittedBy = get('submitted');
+    // Classify: Status column first, then fall back to the Remarks text.
+    const blob = (statusRaw + ' ' + remarks).toLowerCase();
     let cls;
-    if (/done|complete|approved|received|issued/i.test(status))            cls = 'done';
-    else if (!status || /pending|hold|tbd|under discussion/i.test(status)) cls = 'pending';
-    else cls = 'delay';
+    if (/\b(done|completed|complete|approved|issued)\b/.test(blob)
+        && !/\bnot\b|pending|awaited|under\s*(review|working|discussion)|tbd|to be|required|cancel|hold/.test(blob)) cls = 'done';
+    else if (/hold|cancel/.test(blob)) cls = 'delay';
+    else cls = 'pending';
     const remarkParts = [];
-    if (dependency)  remarkParts.push(`Dep: ${dependency}`);
+    if (dep2)        remarkParts.push(`Dep-2: ${dep2}`);
     if (submittedBy) remarkParts.push(`By: ${submittedBy}`);
     if (remarks)     remarkParts.push(remarks);
     items.push({
       contractor: '',
-      tower:      curTower,
+      tower:      inferTower(desc),
       label:      desc,
       done:       cls === 'done' ? 1 : 0,
       total:      1,
-      states:     [status || 'Pending'],
+      states:     [statusRaw || (cls === 'done' ? 'Done' : 'Pending')],
       stageNames: ['Status'],
       status:     cls,
-      dep1:       submittedBy,
-      dep2:       dependency,
+      dep1:       dep1 || '—',     // Dependency 1 (drives the Dependency filter)
+      dep2,
+      submittedBy,
+      timeline,
+      statusText: statusRaw,
       remark:     remarkParts.join(' · '),
     });
   }
@@ -5247,7 +5256,7 @@ async function renderKitchenWardrobeInto(host, scope) {
     else                          filtered = scopedRows;   // 'all' shows every flat (incl. excluded, for reference)
     // ── Cards (drill-down: Vendor → Tower → Status) ──
     const vendorCards = `<div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:0 0 4px 2px">🏷️ Vendor · ${vendorList.length} ordered + Not Ordered</div><div class="cards" style="overflow-x:auto;flex-wrap:nowrap;padding-bottom:6px">
-      ${kwColorCard('vendor','all','All Vendors',allRows.length,activeKwVendor==='all',{ c:'#1e3a5f', activeBg:'#e0e7ff', ring:'#c7d2fe' })}
+      ${kwColorCard('vendor','all','All Units',allRows.length,activeKwVendor==='all',{ c:'#1e3a5f', activeBg:'#e0e7ff', ring:'#c7d2fe' })}
       ${vendorList.map(v => kwColorCard('vendor', v, v, allRows.filter(r => (r.vendor||'').trim() === v).length, activeKwVendor === v, { c:'#0e7490', activeBg:'#cffafe', ring:'#a5f3fc' })).join('')}
       ${kwColorCard('vendor','not-ordered','Not Ordered',noCounts.all,activeKwVendor==='not-ordered',{ c:'#dc2626', activeBg:'#fee2e2', ring:'#fca5a5' })}
     </div>`;
@@ -6139,22 +6148,35 @@ async function renderDrawings() {
     const filtered = items.filter(it => it.status === activeDrawingsStatus);
     const pillStyles = { done:'background:#dcfce7;color:#16a34a', delay:'background:#fee2e2;color:#dc2626', pending:'background:#fef3c7;color:#b45309' };
     const pillText = { done:'Done', delay:'Delayed', pending:'Pending' };
-    const showTowerCol = true;
+    // ── Timeline summary — group the in-scope drawings by their Timeline date ──
+    const tlGroups = {};
+    items.forEach(r => { const t = (r.timeline || '').trim(); if (t) (tlGroups[t] = tlGroups[t] || []).push(r); });
+    const _dnum = d => { const m = String(d).match(/(\d{1,2})[\/-](\d{1,2})[\/-](\d{2,4})/) || String(d).match(/(\d{1,2})[-\s]([A-Za-z]{3})/); if (!m) return 9e9; if (m[3]) return (m[3].length===2?2000+ +m[3]:+m[3])*10000 + (+m[2])*100 + +m[1]; const MO={jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12}; return 20260000 + (MO[(m[2]||'').toLowerCase()]||12)*100 + +m[1]; };
+    const tlDates = Object.keys(tlGroups).sort((a,b) => _dnum(a) - _dnum(b));
+    const timelineHtml = tlDates.length === 0 ? '' :
+      `<div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:10px 0 4px 2px">📅 Timeline${breadcrumb ? ' ·'+escapeHtml(breadcrumb):''}</div>
+       <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px">
+         ${tlDates.map(d => `<div style="background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;padding:8px 12px;font-size:13px;color:#075985">
+            <strong style="color:#1d4ed8">${tlGroups[d].length} drawing${tlGroups[d].length>1?'s':''}</strong> targeted for <strong>${escapeHtml(d)}</strong>
+          </div>`).join('')}
+       </div>`;
     const tableHtml = filtered.length === 0
       ? `<div class="empty">No items in this status.</div>`
-      : `<table><thead><tr><th>#</th>${showTowerCol?'<th>Section</th>':''}<th>Drawing</th><th style="text-align:center">Status</th><th>Dependency / Remarks</th></tr></thead><tbody>${
+      : `<table><thead><tr><th>#</th><th>Drawing</th><th>Dependency 1</th><th style="text-align:center">Timeline</th><th style="text-align:center">Status</th><th>Remarks</th></tr></thead><tbody>${
         filtered.map((r,i) => `<tr>
           <td>${i+1}</td>
-          ${showTowerCol?`<td style="font-weight:600;color:#1e3a5f">${escapeHtml(r.tower||'—')}</td>`:''}
           <td class="loc">${escapeHtml(r.label)}</td>
-          <td style="text-align:center"><span class="pill" style="${pillStyles[r.status]}">${pillText[r.status]}</span></td>
+          <td style="font-weight:600;color:#1e3a5f">${escapeHtml(r.dep1||'—')}</td>
+          <td style="text-align:center">${r.timeline ? `<span class="pill" style="background:#dbeafe;color:#1d4ed8;font-size:10px">${escapeHtml(r.timeline)}</span>` : '<span style="color:#cbd5e1">—</span>'}</td>
+          <td style="text-align:center"><span class="pill" style="${pillStyles[r.status]}">${escapeHtml(r.statusText || pillText[r.status])}</span></td>
           <td style="color:${r.remark?'#6b7280':'#d1d5db'};font-style:${r.remark?'normal':'italic'}">${escapeHtml(r.remark||'—')}</td>
         </tr>`).join('')}</tbody></table>`;
     container.innerHTML = `
       <div class="eyebrow">📐 Drawing Status${breadcrumb} <span class="tag live">LIVE</span></div>
-      ${liveBar('live', allItems.length, 'Dwg status sheet')}
+      ${liveBar('live', allItems.length, 'DWG Final list')}
       ${dependencyNav}
       ${statusCardsHtml(STATUS_TABS, counts, activeDrawingsStatus)}
+      ${timelineHtml}
       <div class="tbl-wrap" style="border-color:${tab.border}">
         <div class="tbl-head" style="background:${tab.bg};border-bottom:1px solid ${tab.border}">
           <span>${tab.icon}</span>
