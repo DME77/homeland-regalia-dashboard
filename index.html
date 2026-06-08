@@ -5308,15 +5308,27 @@ function vanityPill(v) {
   if (/^false$/i.test(t)) return `<span class="pill" style="background:#f1f5f9;color:#94a3b8">✗</span>`;
   return `<span class="pill" style="background:#fef3c7;color:#b45309;font-size:9px">${escapeHtml(t)}</span>`;
 }
-// Whether a flat's cell counts as a real toilet/item for the column total.
-// Excludes NA, HOLD, and sample flats (those aren't toilets to be installed).
+// A whole flat is excluded from vanity counts when it's a sample flat or fully
+// on hold (any cell is exactly "HOLD", or the remark says HOLD). A *partial*
+// hold note like "HOLD DUE TO WATER TANK" in one toilet does NOT exclude the
+// flat — its toilets still count (pending).
+function vanityFlatExcluded(row) {
+  if (/sample/i.test(row.remark || '')) return true;
+  if (/^\s*hold\s*$/i.test(row.remark || '')) return true;
+  for (const v of Object.values(row.cells)) {
+    const u = String(v || '').trim().toUpperCase();
+    if (u === 'HOLD') return true;
+    if (/sample/i.test(v || '')) return true;
+  }
+  return false;
+}
+// Whether a flat's toilet cell counts as a real toilet for the totals.
+// Counts blank / FALSE / TRUE / partial-hold-text (a real toilet, just not done);
+// excludes only NA cells and cells in excluded (sample / fully-hold) flats.
 function vanityCountable(row, colKey) {
-  const v = row.cells[colKey];
-  if (!String(v || '').trim()) return false;          // blank = no toilet / no data
-  const st = vanityCellStatus(v);
-  if (st === 'na' || st === 'hold') return false;
-  if (/sample/i.test(v || '') || /sample/i.test(row.remark || '')) return false;
-  return true;
+  if (!(colKey in row.cells)) return false;
+  if (vanityFlatExcluded(row)) return false;
+  return String(row.cells[colKey] || '').trim().toUpperCase() !== 'NA';
 }
 // A flat is "complete" when every present report column is done or N/A, with ≥1 done.
 function vanityRowComplete(cells) {
@@ -5361,23 +5373,27 @@ function parseVanity(csv, towerName) {
   }
   return out;
 }
-function vanTowerPct(rows) {
-  if (!rows.length) return '—';
-  const done = rows.filter(r => vanityRowComplete(r.cells)).length;
-  return Math.round(done / rows.length * 100) + '% done';
-}
-// Total toilets/vanities across a set of flats (matches the sheet's "TOTAL NO OF
-// VANITY"). installed = TRUE toilet cells; total = countable toilet cells
-// (excludes NA, HOLD, sample).
+// Total toilets/vanities across a set of flats (matches the sheet's
+// "TOTAL VANATIES FIXED"). total = countable toilet cells (excl. NA + sample/hold
+// flats); installed = TRUE; delivered = toilets in flats whose Vanity-on-Site is TRUE.
 function vanityToiletTotals(rows) {
-  let installed = 0, total = 0;
-  rows.forEach(r => VANITY_TOILET_KEYS.forEach(k => {
-    if (!(k in r.cells)) return;
-    if (!vanityCountable(r, k)) return;
-    total++;
-    if (vanityCellStatus(r.cells[k]) === 'done') installed++;
-  }));
-  return { installed, total };
+  let installed = 0, total = 0, delivered = 0;
+  rows.forEach(r => {
+    const isDelivered = vanityCellStatus(r.cells.vanity || '') === 'done';
+    VANITY_TOILET_KEYS.forEach(k => {
+      if (!vanityCountable(r, k)) return;
+      total++;
+      if (vanityCellStatus(r.cells[k]) === 'done') installed++;
+      if (isDelivered) delivered++;
+    });
+  });
+  return { installed, total, delivered };
+}
+// Tower-card descriptor: "fixed / total · pct%" (toilets installed of total).
+function vanTowerPct(rows) {
+  const t = vanityToiletTotals(rows);
+  if (!t.total) return '—';
+  return `${t.installed} / ${t.total} · ${Math.round(t.installed / t.total * 100)}%`;
 }
 async function renderVanityInto(host) {
   host.innerHTML = `${liveBar('loading')}<div class="loading">⏳ Pulling Vanity sheet…</div>`;
@@ -5407,60 +5423,78 @@ async function renderVanityInto(host) {
     const stCounts = { all: colScopeRows.length };
     VANITY_STATUSES.forEach(s => { stCounts[s.key] = 0; });
     colScopeRows.forEach(r => { stCounts[vanityCellStatus(r.cells[activeVanityColumn])]++; });
-    // Filtered rows for the table
-    let filtered = towerRows;
-    if (activeVanityColumn !== 'all') filtered = filtered.filter(r => activeVanityColumn in r.cells);
-    if (activeVanityStatus !== 'all') filtered = filtered.filter(r => vanityCellStatus(r.cells[activeVanityColumn]) === activeVanityStatus);
+    // Column/status filters are retired (no UI) — always show the full tower scope.
+    activeVanityColumn = 'all'; activeVanityStatus = 'all';
+    const filtered = towerRows;
     // ── Cards ──
     const towerCards = `<div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:0 0 4px 2px">📍 Tower</div><div class="cards" style="overflow-x:auto;flex-wrap:nowrap;padding-bottom:6px">
-      ${kwColorCard('tower','all','All Towers',allRows.length,activeVanityTower==='all',{ c:'#1e3a5f', activeBg:'#e0e7ff', ring:'#c7d2fe' }, vanTowerPct(allRows))}
+      ${kwColorCard('tower','all','All Units',allRows.length,activeVanityTower==='all',{ c:'#1e3a5f', activeBg:'#e0e7ff', ring:'#c7d2fe' }, vanTowerPct(allRows))}
       ${towerNames.map(t => { const tr = allRows.filter(r => r.tower === t); return kwColorCard('tower', t, t, tr.length, activeVanityTower === t, { c:'#7c3aed', activeBg:'#f3e8ff', ring:'#e9d5ff' }, vanTowerPct(tr)); }).join('')}
     </div>`;
-    // Total toilets/vanities (matches the sheet's "TOTAL NO OF VANITY" sum).
+    // Vanity funnel (out of total toilets): how many delivered vs fixed.
+    // total   = applicable toilets (excl. NA / Hold / Sample)
+    // delivered = toilets in flats whose "Vanity on Site" is TRUE
+    // fixed   = toilets installed (TRUE)
     const toiletTot = vanityToiletTotals(towerRows);
-    const toiletBanner = `<div style="display:flex;gap:10px;flex-wrap:wrap;margin:10px 0">
-      <div style="flex:1 1 160px;background:#ecfdf5;border:1px solid #6ee7b7;border-radius:10px;padding:10px 14px">
-        <div style="font-size:22px;font-weight:800;color:#047857">${toiletTot.installed}</div>
-        <div style="font-size:11px;color:#065f46;font-weight:600">🚽 Toilets installed (Total No. of Vanity)</div>
-      </div>
-      <div style="flex:1 1 160px;background:#eff6ff;border:1px solid #93c5fd;border-radius:10px;padding:10px 14px">
-        <div style="font-size:22px;font-weight:800;color:#1d4ed8">${toiletTot.total}</div>
-        <div style="font-size:11px;color:#1e3a5f;font-weight:600">Total toilets (excl. NA / Hold / Sample)</div>
-      </div>
-      <div style="flex:1 1 160px;background:#fffbeb;border:1px solid #fcd34d;border-radius:10px;padding:10px 14px">
-        <div style="font-size:22px;font-weight:800;color:#b45309">${toiletTot.total - toiletTot.installed}</div>
-        <div style="font-size:11px;color:#92400e;font-weight:600">Toilets pending</div>
-      </div>
-    </div>`;
-    const colCards = `<div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:10px 0 4px 2px">🚿 Report column · ${presentCols.length} in scope</div><div class="cards" style="overflow-x:auto;flex-wrap:nowrap;padding-bottom:6px">
-      ${kwColorCard('column','all','All Columns',towerRows.length,activeVanityColumn==='all',{ c:'#1e3a5f', activeBg:'#e0e7ff', ring:'#c7d2fe' })}
-      ${presentCols.map(col => {
-        // Total = actual toilets to do: exclude NA, HOLD and sample flats.
-        const applicable = towerRows.filter(r => col.key in r.cells && vanityCountable(r, col.key));
-        const done = applicable.filter(r => vanityCellStatus(r.cells[col.key]) === 'done').length;
-        return kwColorCard('column', col.key, col.label, done, activeVanityColumn === col.key, { c:'#0e7490', activeBg:'#cffafe', ring:'#a5f3fc' }, `of ${applicable.length} toilets`);
-      }).join('')}
-    </div>`;
-    const statusCards = activeVanityColumn === 'all' ? '' :
-      `<div style="font-size:10px;font-weight:700;color:#0e7490;letter-spacing:1px;text-transform:uppercase;margin:8px 0 4px 14px">↳ ${escapeHtml((VANITY_COLS.find(c=>c.key===activeVanityColumn)||{}).label)} status</div><div class="cards" style="overflow-x:auto;flex-wrap:nowrap;padding-bottom:6px;margin-left:12px">
-        ${kwColorCard('status','all','All',stCounts.all,activeVanityStatus==='all',{ c:'#1e3a5f', activeBg:'#e0e7ff', ring:'#c7d2fe' })}
-        ${VANITY_STATUSES.map(s => kwColorCard('status', s.key, s.label, stCounts[s.key]||0, activeVanityStatus===s.key, s)).join('')}
+    const deliveredToilets = toiletTot.delivered;
+    const totT = toiletTot.total, fixedT = toiletTot.installed;
+    const pct = n => totT ? Math.round(n / totT * 100) : 0;
+    // denom != null → show "val / denom · pct%"; null → just the number (total card).
+    const funnelCard = (val, sub, c, bg, bd, denom) =>
+      `<div style="flex:1 1 150px;background:${bg};border:1px solid ${bd};border-radius:10px;padding:10px 14px">
+        <div style="font-size:22px;font-weight:800;color:${c}">${val}${denom!=null?`<span style="font-size:13px;font-weight:600"> / ${denom} · ${pct(val)}%</span>`:''}</div>
+        <div style="font-size:11px;color:${c};font-weight:600">${sub}</div>
       </div>`;
-    // ── Table (dynamic columns) ──
+    const toiletBanner = `<div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:10px 0 4px 2px">🚿 Vanities — out of ${totT} total toilets</div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin:0 0 10px">
+        ${funnelCard(totT, 'Total toilets (excl. NA / Hold / Sample)', '#1e3a5f', '#eff6ff', '#93c5fd', null)}
+        ${funnelCard(deliveredToilets, '📦 Delivered (vanity on site)', '#1d4ed8', '#eff6ff', '#93c5fd', totT)}
+        ${funnelCard(fixedT, '✅ Fixed / installed', '#047857', '#ecfdf5', '#6ee7b7', totT)}
+        ${funnelCard(totT - fixedT, '🕐 Pending', '#b45309', '#fffbeb', '#fcd34d', totT)}
+      </div>`;
+    // Report-column click cards removed — replaced by the funnel above.
+    const colCards = '';
+    const statusCards = '';
+    // ── Table — delivered (Vanity on Site) vs fixed (Total Vanities Fixed) ──
+    // Per-flat toilet columns are collapsed into one "fixed / total" cell so the
+    // tower's real delivered-vs-fixed picture is visible at a glance.
     const hasRemark = filtered.some(r => r.remark);
-    const colHeads = presentCols.map(c => `<th style="text-align:center;font-size:10px">${escapeHtml(c.label)}</th>`).join('');
+    const hasVanityCol = presentCols.some(c => c.key === 'vanity');
+    function vanityFixedCell(r) {
+      let total = 0, fixed = 0;
+      VANITY_TOILET_KEYS.forEach(k => {
+        if (!(k in r.cells)) return;
+        if (!vanityCountable(r, k)) return;
+        total++;
+        if (vanityCellStatus(r.cells[k]) === 'done') fixed++;
+      });
+      if (total === 0) {
+        // No applicable toilets — show why (Hold / Sample flat) else a dash (all NA).
+        if (vanityFlatExcluded(r)) {
+          const sample = /sample/i.test(r.remark || '') || Object.values(r.cells).some(v => /sample/i.test(v || ''));
+          const label = sample ? 'SAMPLE' : 'HOLD';
+          return `<span class="pill" style="background:#fee2e2;color:#dc2626;font-size:9px">${label}</span>`;
+        }
+        return `<span style="color:#cbd5e1">—</span>`;
+      }
+      const col = fixed === total ? '#16a34a' : fixed === 0 ? '#94a3b8' : '#b45309';
+      const bg  = fixed === total ? '#dcfce7' : fixed === 0 ? '#f1f5f9' : '#fef3c7';
+      return `<span class="pill" style="background:${bg};color:${col};font-weight:700">${fixed} / ${total}</span>`;
+    }
     const tableHtml = filtered.length === 0
       ? `<div class="empty">No flats match these filters.</div>`
-      : `<table style="min-width:${320 + presentCols.length*90}px">
+      : `<table style="min-width:680px">
           <thead><tr>
             <th>#</th><th>Flat</th>
-            ${colHeads}
+            ${hasVanityCol ? '<th style="text-align:center">Vanity on Site<div style="font-size:9px;font-weight:400;color:#94a3b8">delivered</div></th>' : ''}
+            <th style="text-align:center">Total Vanities Fixed<div style="font-size:9px;font-weight:400;color:#94a3b8">fixed / total</div></th>
             ${hasRemark ? '<th>Remark</th>' : ''}
           </tr></thead>
           <tbody>${filtered.map((r,i) => `<tr>
             <td>${i+1}</td>
             <td style="font-family:monospace;font-weight:700;color:#1e3a5f">${escapeHtml(r.flat)}</td>
-            ${presentCols.map(c => `<td style="text-align:center">${c.key in r.cells ? vanityPill(r.cells[c.key]) : '<span style="color:#cbd5e1">—</span>'}</td>`).join('')}
+            ${hasVanityCol ? `<td style="text-align:center">${'vanity' in r.cells ? vanityPill(r.cells.vanity) : '<span style="color:#cbd5e1">—</span>'}</td>` : ''}
+            <td style="text-align:center">${vanityFixedCell(r)}</td>
             ${hasRemark ? `<td style="font-size:11px;color:#64748b">${escapeHtml(r.remark||'')}</td>` : ''}
           </tr>`).join('')}</tbody>
         </table>`;
