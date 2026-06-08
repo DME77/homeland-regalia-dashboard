@@ -4681,11 +4681,20 @@ function parseCommercialKitchen(raw) {
       for (let j = s + 1; j < sectionStarts.length; j++) sectionStarts[j]++;
     }
     const rows = [];
+    const timelines = [];
     let cursor = dataStart;
     while (cursor < endAfterSplice && !/\d/.test((fields[cursor]||''))) cursor++;
     while (cursor < endAfterSplice) {
       const cur0 = fields[cursor] || '';
-      if (!/^\s*\d+$/.test(cur0)) { cursor++; continue; }
+      if (!/^\s*\d+$/.test(cur0)) {
+        // Field sitting between rows — capture a date like "13-Jun" as the
+        // Timelines value for the row just read (this column is otherwise skipped).
+        const t = cur0.trim();
+        if (rows.length && /^\d{1,2}[-\s][A-Za-z]{3,}/.test(t) && !timelines[rows.length - 1]) {
+          timelines[rows.length - 1] = t;
+        }
+        cursor++; continue;
+      }
       const row = [];
       for (let k = 0; k < colCount && cursor + k < endAfterSplice; k++) {
         const cur = fields[cursor + k] || '';
@@ -4695,9 +4704,10 @@ function parseCommercialKitchen(raw) {
       const collected = row.length;
       while (row.length < colCount) row.push('');
       rows.push(row.slice(0, colCount));
+      timelines.push('');
       cursor += Math.max(collected, 1);
     }
-    sections.push({ label: sectionLabel, rows, colCount });
+    sections.push({ label: sectionLabel, rows, colCount, timelines });
   }
   return { sections };
 }
@@ -4784,7 +4794,7 @@ async function renderCommercialKitchenInto(host) {
       ? sections
       : sections.filter(s => (s.label||'').trim() === activeKitchenSection);
     const allRows = [];
-    useSections.forEach(sec => sec.rows.forEach(r => {
+    useSections.forEach(sec => sec.rows.forEach((r, ri) => {
       const cc = sec.colCount || r.length;
       allRows.push({
         sno:           r[0],
@@ -4797,6 +4807,7 @@ async function renderCommercialKitchenInto(host) {
         vendor:        cc >= 10 ? r[7] : '',
         delivery:      r[cc - 2] || '',
         commissioning: r[cc - 1] || '',
+        timeline:      (sec.timelines && sec.timelines[ri]) || '',
         section:       sec.label,
       });
     }));
@@ -4847,7 +4858,7 @@ async function renderCommercialKitchenInto(host) {
     const delCounts = { all: statusScope.length, received: 0, pending: 0 };
     const comCounts = { all: statusScope.length, commissioned: 0, 'mep-clearance': 0, 'size-issue': 0, hold: 0, 'fitout-item': 0, 'not-received': 0 };
     statusScope.forEach(r => { delCounts[delClass(r)]++; comCounts[comClass(r)]++; });
-    function filterCardHtml(group, key, label, num, active) {
+    function filterCardHtml(group, key, label, num, active, desc) {
       const colors = key === 'all' ? { c:'#1e3a5f', bg:active?'#e0e7ff':'#fff', rb:'#c7d2fe' }
                    : key === 'received' ? { c:'#16a34a', bg:active?'#dcfce7':'#fff', rb:'#bbf7d0' }
                    : { c:'#b45309', bg:active?'#fef3c7':'#fff', rb:'#fde68a' };
@@ -4856,15 +4867,17 @@ async function renderCommercialKitchenInto(host) {
         style="flex:0 0 auto;min-width:140px;border-color:${border};background:${colors.bg};box-shadow:${active?'0 0 0 3px '+colors.rb:'0 1px 4px rgba(0,0,0,0.05)'}">
         <div class="card-num" style="color:${colors.c};font-size:22px">${num}</div>
         <div class="card-label" style="font-size:11px">${escapeHtml(label)}</div>
+        ${desc ? `<div class="card-desc" style="font-size:10px;color:#64748b">${escapeHtml(desc)}</div>` : ''}
       </button>`;
     }
-    function colorCardHtml(group, key, label, count, active, palette) {
+    function colorCardHtml(group, key, label, count, active, palette, desc) {
       const c = palette.c, bg = active ? palette.activeBg : '#fff', rb = palette.ring;
       const border = active ? c : '#e2e8f0';
       return `<button class="card${active?' active':''}" data-kfilter-group="${group}" data-kfilter-key="${escapeHtml(key)}"
         style="flex:0 0 auto;min-width:140px;border-color:${border};background:${bg};box-shadow:${active?'0 0 0 3px '+rb:'0 1px 4px rgba(0,0,0,0.05)'}">
         <div class="card-num" style="color:${c};font-size:22px">${count}</div>
         <div class="card-label" style="font-size:11px">${escapeHtml(label)}</div>
+        ${desc ? `<div class="card-desc" style="font-size:10px;color:#64748b">${escapeHtml(desc)}</div>` : ''}
       </button>`;
     }
     const areaPalette    = { c:'#7c3aed', activeBg:'#f3e8ff', ring:'#e9d5ff' };
@@ -4884,9 +4897,9 @@ async function renderCommercialKitchenInto(host) {
       }).join('')}
     </div>`;
     const delCards = `<div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:10px 0 4px 2px">📦 Delivery status</div><div class="cards" style="overflow-x:auto;flex-wrap:nowrap;padding-bottom:6px">
-      ${filterCardHtml('delivery','all','All',delCounts.all,activeKitchenDelivery==='all')}
-      ${filterCardHtml('delivery','received','Received',delCounts.received,activeKitchenDelivery==='received')}
-      ${filterCardHtml('delivery','pending','Pending',delCounts.pending,activeKitchenDelivery==='pending')}
+      ${filterCardHtml('delivery','all','All',delCounts.all,activeKitchenDelivery==='all','total items')}
+      ${filterCardHtml('delivery','received','Received',delCounts.received,activeKitchenDelivery==='received',`of ${delCounts.all}`)}
+      ${filterCardHtml('delivery','pending','Pending',delCounts.pending,activeKitchenDelivery==='pending',`of ${delCounts.all}`)}
     </div>`;
     const COM_STATUSES = [
       { key:'commissioned',  label:'Commissioned',  c:'#16a34a', activeBg:'#dcfce7', ring:'#86efac' },
@@ -4897,8 +4910,8 @@ async function renderCommercialKitchenInto(host) {
       { key:'not-received',  label:'Not Received',   c:'#475569', activeBg:'#f1f5f9', ring:'#cbd5e1' },
     ];
     const comCards = `<div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:10px 0 4px 2px">⚙️ Commissioning status</div><div class="cards" style="overflow-x:auto;flex-wrap:nowrap;padding-bottom:6px">
-      ${colorCardHtml('commissioning','all','All',comCounts.all,activeKitchenCommissioning==='all',{ c:'#1e3a5f', activeBg:'#e0e7ff', ring:'#c7d2fe' })}
-      ${COM_STATUSES.map(s => colorCardHtml('commissioning', s.key, s.label, comCounts[s.key]||0, activeKitchenCommissioning===s.key, { c:s.c, activeBg:s.activeBg, ring:s.ring })).join('')}
+      ${colorCardHtml('commissioning','all','All',comCounts.all,activeKitchenCommissioning==='all',{ c:'#1e3a5f', activeBg:'#e0e7ff', ring:'#c7d2fe' },'total items')}
+      ${COM_STATUSES.map(s => colorCardHtml('commissioning', s.key, s.label, comCounts[s.key]||0, activeKitchenCommissioning===s.key, { c:s.c, activeBg:s.activeBg, ring:s.ring }, `of ${comCounts.all}`)).join('')}
     </div>`;
     // Per-status pill for the commissioning column in the table
     const COM_PILL_STYLE = {
@@ -4928,13 +4941,27 @@ async function renderCommercialKitchenInto(host) {
     if (activeKitchenDelivery !== 'all')      scopeParts.push('Delivery: ' + activeKitchenDelivery);
     if (activeKitchenCommissioning !== 'all') scopeParts.push('Commissioning: ' + activeKitchenCommissioning);
     const scopeLabel = scopeParts.length === 0 ? 'All items' : scopeParts.join(' · ');
+    // ── Delivery timeline summary — group the in-scope items by target date ──
+    const KIT_MON = { jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11 };
+    const tlSortKey = d => { const m = String(d).match(/^(\d{1,2})[-\s]([A-Za-z]{3})/); if (!m) return 9e9; const mon = KIT_MON[m[2].toLowerCase()]; return (mon===undefined?11:mon)*100 + parseInt(m[1]); };
+    const tlGroups = {};
+    filtered.forEach(r => { const t = (r.timeline || '').trim(); if (t) (tlGroups[t] = tlGroups[t] || []).push(r); });
+    const tlDates = Object.keys(tlGroups).sort((a,b) => tlSortKey(a) - tlSortKey(b));
+    const catWord = activeKitchenSection === 'all' ? 'items' : `${escapeHtml(activeKitchenSection)} items`;
+    const timelineHtml = tlDates.length === 0 ? '' :
+      `<div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:10px 0 4px 2px">📅 Delivery timeline (target dates)</div>
+       <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px">
+         ${tlDates.map(d => `<div style="background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;padding:8px 12px;font-size:13px;color:#075985">
+            <strong style="color:#1d4ed8">${tlGroups[d].length} ${catWord}</strong> will be delivered on <strong>${escapeHtml(d)}</strong>
+          </div>`).join('')}
+       </div>`;
     const tableHtml = filtered.length === 0
       ? `<div class="empty">No items match these filters.</div>`
-      : `<table style="min-width:1000px">
+      : `<table style="min-width:1080px">
           <thead><tr>
             <th>#</th><th>Area</th><th>Item No</th><th>Qty</th>
             <th>Cat</th><th>Description</th>
-            <th style="text-align:center">Delivery</th><th style="text-align:center">Commissioning</th>
+            <th style="text-align:center">Delivery</th><th style="text-align:center">Commissioning</th><th style="text-align:center">Target date</th>
           </tr></thead>
           <tbody>${filtered.map((r,i) => `<tr>
             <td>${i+1}</td>
@@ -4945,6 +4972,7 @@ async function renderCommercialKitchenInto(host) {
             <td>${escapeHtml(r.desc||'—')}</td>
             <td style="text-align:center">${pill(r.delivery, delClass(r))}</td>
             <td style="text-align:center">${comPill(r)}</td>
+            <td style="text-align:center">${r.timeline ? `<span class="pill" style="background:#dbeafe;color:#1d4ed8;font-size:10px">${escapeHtml(r.timeline)}</span>` : '<span style="color:#cbd5e1">—</span>'}</td>
           </tr>`).join('')}</tbody>
         </table>`;
     // ── Section cards (CB items / Haks / ID) ───────────────
@@ -4959,7 +4987,7 @@ async function renderCommercialKitchenInto(host) {
                     : { c:'#475569', bg:'#f1f5f9', ring:'#cbd5e1' };
       const border = active ? palette.c : '#e2e8f0';
       const cardBg = active ? palette.bg : '#fff';
-      const label = key === 'all' ? 'All Sheets' : key;
+      const label = key === 'all' ? 'All Items' : key;
       const icon  = key === 'all' ? '🌐 ' : '';
       return `<button class="card${active?' active':''}" data-kfilter-group="section" data-kfilter-key="${escapeHtml(key)}"
         style="flex:0 0 auto;min-width:150px;border-color:${border};background:${cardBg};box-shadow:${active?'0 0 0 3px '+palette.ring:'0 1px 4px rgba(0,0,0,0.05)'}">
@@ -4968,18 +4996,24 @@ async function renderCommercialKitchenInto(host) {
         <div class="card-desc" style="font-size:10px">items</div>
       </button>`;
     }
-    const totalAcrossSections = sections.reduce((n, s) => n + (s.rows ? s.rows.length : 0), 0);
-    const sectionCardsHtml = `<div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:0 0 4px 2px">📑 Section (sheet tab)</div><div class="cards" style="overflow-x:auto;flex-wrap:nowrap;padding-bottom:6px;margin-bottom:10px">
-      ${sectionCardHtml('all', totalAcrossSections, activeKitchenSection === 'all')}
+    // Category counts are scoped to the selected Area (col B = raw row[1]), so e.g.
+    // CB items shows how many items fall in this area, not the global CB total.
+    // Computed from the raw section rows so it's independent of the active category.
+    const areaCount = secRows => activeKitchenArea === 'all'
+      ? secRows.length
+      : secRows.filter(row => (row[1] || '').trim() === activeKitchenArea).length;
+    const catAllCount = sections.reduce((n, s) => n + areaCount(s.rows || []), 0);
+    const sectionCardsHtml = `<div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:0 0 4px 2px">📑 Category</div><div class="cards" style="overflow-x:auto;flex-wrap:nowrap;padding-bottom:6px;margin-bottom:10px">
+      ${sectionCardHtml('all', catAllCount, activeKitchenSection === 'all')}
       ${sectionLabels.map(label => {
-        const count = (sections.find(s => (s.label||'').trim() === label) || { rows:[] }).rows.length;
-        return sectionCardHtml(label, count, activeKitchenSection === label);
+        const sec = sections.find(s => (s.label||'').trim() === label) || { rows: [] };
+        return sectionCardHtml(label, areaCount(sec.rows || []), activeKitchenSection === label);
       }).join('')}
     </div>`;
     host.innerHTML = `
       ${liveBar('live', allRows.length, 'Main Kitchen final details.xlsx')}
       <div style="background:#f0f9ff;border:1px solid #bae6fd;border-radius:10px;padding:10px 14px;margin-bottom:12px;font-size:12px;color:#075985;display:flex;gap:14px;flex-wrap:wrap">
-        <span><strong>Section:</strong> ${escapeHtml(activeKitchenSection === 'all' ? 'All Sheets' : activeKitchenSection)}</span>
+        <span><strong>Category:</strong> ${escapeHtml(activeKitchenSection === 'all' ? 'All Items' : activeKitchenSection)}</span>
         <span>·</span>
         <span><strong>${allRows.length}</strong> items</span>
         <span>·</span>
@@ -4987,12 +5021,15 @@ async function renderCommercialKitchenInto(host) {
         <span>·</span>
         <span><strong>${subAreaList.length}</strong> sub-areas in scope</span>
       </div>
-      ${delCards}
-      ${comCards}
-      <div style="font-size:11px;color:#64748b;margin:4px 0 8px">Filter by Section → Area → Sub-area below. Currently showing: <strong>${escapeHtml(scopeLabel)}</strong>.</div>
-      ${sectionCardsHtml}
+      <div style="font-size:11px;color:#64748b;margin:4px 0 8px">Pick an Area to drill into Section → Sub-area → Delivery / Commissioning. Currently showing: <strong>${escapeHtml(scopeLabel)}</strong>.</div>
       ${areaCards}
-      ${subAreaCards}
+      ${activeKitchenArea === 'all' ? '' : `
+        ${sectionCardsHtml}
+        ${subAreaCards}
+        ${delCards}
+        ${comCards}
+      `}
+      ${timelineHtml}
       <div class="tbl-wrap" style="margin-top:12px">
         <div class="tbl-head" style="background:#eff6ff;border-bottom:1px solid #bfdbfe">
           <span>🍳</span>
@@ -5008,8 +5045,8 @@ async function renderCommercialKitchenInto(host) {
     host.querySelectorAll('[data-kfilter-group]').forEach(b => {
       b.addEventListener('click', () => {
         const g = b.dataset.kfilterGroup, k = b.dataset.kfilterKey;
-        if (g === 'section')          { activeKitchenSection = k; activeKitchenArea = 'all'; activeKitchenSubArea = 'all'; }
-        else if (g === 'area')        { activeKitchenArea = k; activeKitchenSubArea = 'all'; }
+        if (g === 'area')             { activeKitchenArea = k; activeKitchenSection = 'all'; activeKitchenSubArea = 'all'; activeKitchenDelivery = 'all'; activeKitchenCommissioning = 'all'; }
+        else if (g === 'section')     { activeKitchenSection = k; activeKitchenSubArea = 'all'; }
         else if (g === 'subarea')       activeKitchenSubArea = k;
         else if (g === 'delivery')      activeKitchenDelivery = k;
         else if (g === 'commissioning') activeKitchenCommissioning = k;
