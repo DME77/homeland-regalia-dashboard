@@ -317,7 +317,7 @@ const FILES = {
   civilFacade:    '1TSgRRwur-HGjuOK3XlxlbOBiEUkYmniHcKldo-xFq80',
   landscape:      '1ICmK_vcCTczSbNbTrEGg3f72wWilx8_NrsepsxSceZs',
   interior:       '15WH66qd3e04ojvDhg7DQiWVDOLa9oDvo8LQDpJtQL_U',
-  elevators:      '19FPO2uYXc5yaGEvnK4M8BsNj_45RUzDeEAFfaQ-DgLU',
+  elevators:      '1_p6ElHE6TsrEzrSLxpCF_BFcsQhLZmLT',
   commercialKitchen: '1831xcw0P-qb1BKL1qtVUHwrLyC5TFLGGdlHUDSEIsEA',
   kitchenWardrobe: '11MghP-8uexAw292CoYSSKNoZswP1vpzgPNk8_huGrh4',
   vanity: '1lVaxVDsvSwkCPeD4Fzc2lCvrHYGgQB_IjiNGJyEdRxA',
@@ -531,7 +531,7 @@ const SHEET_TABS = {
     { gid: 1341448177, name: 'WATCON' },
   ],
   // Elevators — ALL LIFTS STATUS tab
-  '19FPO2uYXc5yaGEvnK4M8BsNj_45RUzDeEAFfaQ-DgLU': [
+  '1_p6ElHE6TsrEzrSLxpCF_BFcsQhLZmLT': [
     { gid: 1032189238, name: 'ALL LIFTS STATUS' },
   ],
   // Commercial Kitchen — main data tab
@@ -633,8 +633,11 @@ const _sheetLastModified = {};
 
 async function fetchSheetTab(fileId, gid) {
   const base = `https://docs.google.com/spreadsheets/d/${fileId}/export?format=csv`;
-  const url  = gid != null ? `${base}&gid=${gid}` : base;
-  const r = await fetch(url, { credentials: 'omit' });
+  // Cache-buster (&_cb=timestamp) + no-store: Google's CSV export is otherwise
+  // served from the browser/CDN HTTP cache, which can return a stale copy even
+  // after Reload. This forces a fresh pull every time.
+  const url  = (gid != null ? `${base}&gid=${gid}` : base) + `&_cb=${Date.now()}`;
+  const r = await fetch(url, { credentials: 'omit', cache: 'no-store' });
   if (!r.ok) throw new Error(`HTTP ${r.status} fetching ${fileId}${gid != null ? ' tab ' + gid : ''} — make sure the sheet is shared "Anyone with link → Viewer".`);
   // Capture Last-Modified from CDN response (reflects actual sheet edit time)
   if (!_sheetLastModified[fileId]) {
@@ -655,8 +658,8 @@ async function fetchSheetTabRawByName(fileId, sheetName, headerRows) {
   //   MEP sheets have a single header row → 1 (passing 2 would eat the first
   //   data row, dropping a contractor and shifting all numbers).
   const h = headerRows == null ? 2 : headerRows;
-  const url = `https://docs.google.com/spreadsheets/d/${fileId}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(sheetName)}&headers=${h}`;
-  const r = await fetch(url, { credentials: 'omit' });
+  const url = `https://docs.google.com/spreadsheets/d/${fileId}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(sheetName)}&headers=${h}&_cb=${Date.now()}`;
+  const r = await fetch(url, { credentials: 'omit', cache: 'no-store' });
   if (!r.ok) throw new Error(`HTTP ${r.status} fetching tab "${sheetName}" — ensure the sheet is shared "Anyone with link → Viewer"`);
   return await r.text();
 }
@@ -664,8 +667,11 @@ async function fetchSheetTabRawByName(fileId, sheetName, headerRows) {
 // Raw-CSV variants for parsers that need comma-separated input (not pipe-table).
 async function fetchSheetTabRaw(fileId, gid) {
   const base = `https://docs.google.com/spreadsheets/d/${fileId}/export?format=csv`;
-  const url  = gid != null ? `${base}&gid=${gid}` : base;
-  const r = await fetch(url, { credentials: 'omit' });
+  // Cache-buster (&_cb=timestamp) + no-store: Google's CSV export is otherwise
+  // served from the browser/CDN HTTP cache, which can return a stale copy even
+  // after Reload. This forces a fresh pull every time.
+  const url  = (gid != null ? `${base}&gid=${gid}` : base) + `&_cb=${Date.now()}`;
+  const r = await fetch(url, { credentials: 'omit', cache: 'no-store' });
   if (!r.ok) throw new Error(`HTTP ${r.status} fetching ${fileId}${gid != null ? ' tab ' + gid : ''} — make sure the sheet is shared "Anyone with link → Viewer".`);
   if (!_sheetLastModified[fileId]) {
     const lm = r.headers.get('last-modified');
