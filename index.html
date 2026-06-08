@@ -1627,6 +1627,23 @@ function _stageCellStat(v) {
   return 'delay'; // text notes/remarks → delay
 }
 
+// Strict check: true only when the cell is an actual date that is in the past.
+// (Unlike _stageCellStat, text notes do NOT count.) Used by Interior Execution,
+// where only overdue dated cells should mark a flat as Delayed.
+function _isPastDateCell(v) {
+  const raw = (v || '').trim();
+  const MONTHS = { jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11 };
+  const dm = raw.match(/^(\d{1,2})[-\s]([a-zA-Z]+)(?:[-\s](\d{2,4}))?$/);
+  if (!dm) return false;
+  const mon = MONTHS[(dm[2]||'').slice(0,3).toLowerCase()];
+  if (mon === undefined) return false;
+  const yr = dm[3] ? (dm[3].length===2 ? 2000+parseInt(dm[3]) : parseInt(dm[3])) : new Date().getFullYear();
+  const dt = new Date(yr, mon, parseInt(dm[1]));
+  dt.setHours(0,0,0,0);
+  const today = new Date(); today.setHours(0,0,0,0);
+  return dt < today;
+}
+
 // ─── FHC Lacquered Door — per-tower parser ──────────────────────────────────
 // Tracks 3 key stages per floor: Granite Fixing, Final Sizes, Door Installation.
 // Each floor has 2–3 unit rows; stages are aggregated across all units in a floor.
@@ -2735,17 +2752,18 @@ function parseInteriorExecution(md, contractorTag, defaultTower) {
     const states  = stageIdxs.map(k => (c[k]||'').trim());
     const naCount = states.filter(s => /^NA$/i.test(s) || s === '').length;
     const trueCount = states.filter(s => s.toUpperCase() === 'TRUE').length;
-    // Use _stageCellStat so future dates → pending (not delay)
+    // Interior rule: ONLY cells with an actual past date mark a flat as Delayed.
+    // Text notes, future dates, and in-progress rows (some TRUE, no overdue dates) stay Pending.
     const delayNotes = states.filter(s => {
       const u = s.toUpperCase();
       if (u === 'TRUE' || u === 'FALSE' || u === 'NA' || s === '') return false;
-      return _stageCellStat(s) === 'delay'; // past date or text note → delay; future date → pending
+      return _isPastDateCell(s); // only overdue dated cells → delay
     });
     const totalReal = stageIdxs.length - naCount;
     let status;
     if (totalReal > 0 && trueCount === totalReal) status = 'done';
-    else if (trueCount === 0 && delayNotes.length === 0) status = 'pending';
-    else status = 'delay';
+    else if (delayNotes.length > 0) status = 'delay';
+    else status = 'pending';
     const remark = delayNotes.slice(0, 3).join('; ');
     items.push({
       contractor,
@@ -4060,9 +4078,9 @@ async function renderWork() {
           const v = (item.states[idx] || '').trim();
           if (/^NA$/i.test(v) || v === '') return; // NA/empty = not yet tracked (counts as pending)
           applicable++; // cell has a real value (TRUE / FALSE / date / note)
-          const stat = _stageCellStat(v);
-          if (stat === 'done')  done++;
-          else if (stat === 'delay') delay++;
+          // Interior rule: only overdue dated cells count as delayed; notes/future dates stay pending
+          if (v.toUpperCase() === 'TRUE') done++;
+          else if (_isPastDateCell(v))    delay++;
         });
         const pct = total > 0 ? Math.round(done / total * 100) : 0;
         return { name: stageName, done, delay, total, pct, applicable };
