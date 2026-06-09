@@ -322,6 +322,7 @@ const FILES = {
   kitchenWardrobe: '11MghP-8uexAw292CoYSSKNoZswP1vpzgPNk8_huGrh4',
   vanity: '1lVaxVDsvSwkCPeD4Fzc2lCvrHYGgQB_IjiNGJyEdRxA',
   doors: '1M7jIV1lz4lLtujr7Itz1AiSKuiZIKDA-7Y331lYo9LA',
+  handover: '1yQRAo6GFkubQOAMAcxTyajthH6WyyybAagPDYgSELUg',
   mepLabour:      '1dBfjaVVyud5AXhFK3a771p67134FQkOHIaRFGNeioJg',
   planner:        '1EsUx8Ez8-gjfLT5nf8MiOMqYlBubMRWnTl9dgi-7_R4',
   // Index of daily labour reports: columns → Date | Interior File ID | Facade File ID | MEP File ID
@@ -437,6 +438,8 @@ let activeDrawingsLocation = 'all';   // Drawings tab Location filter
 let activeHoiSection = 'flats';       // HOI category: 'flats' or 'items'
 let activeWpTower  = 'all';           // Waterproofing tower filter (TOWER 1..6)
 let activeWpStatus = 'all';           // Waterproofing status filter (done/progress/pending)
+let activeHoTower  = 'all';           // Handover tower filter (TOWER 1..6)
+let activeHoStage  = 'all';           // Handover stage filter (s1/snag/s2/ready/open)
 let activeElevatorStage = 'all';      // Elevators tab: LIFT DETAILS value or 'all'
 let activeContractor    = 'all';      // Elevators tab: contractor filter
 let activeDrawingsDependency = 'all'; // Drawings tab Dependency filter (Dep-1 value)
@@ -527,6 +530,15 @@ function unwrapMcp(res) {
 // To find a tab's GID: open the sheet, click the tab — the URL fragment becomes
 // "#gid=NNNNNNN". Copy that number.
 const SHEET_TABS = {
+  // HHFMT Handover final list — one tab per tower (5-stage handover pipeline)
+  '1yQRAo6GFkubQOAMAcxTyajthH6WyyybAagPDYgSELUg': [
+    { gid: 0,          name: 'TOWER 1' },
+    { gid: 1184574727, name: 'TOWER 2' },
+    { gid: 606226334,  name: 'TOWER 3' },
+    { gid: 214651417,  name: 'TOWER 4' },
+    { gid: 469461523,  name: 'TOWER 5' },
+    { gid: 1388968762, name: 'TOWER 6' },
+  ],
   // Waterproofing records — one tab per tower (TESTING / PLASTER / PCC report)
   '1MoE-MyuIGQ1BhWFnFTwjcWhcwcglkjkK4BR9wx3oBOo': [
     { gid: 357401033,  name: 'TOWER 1' },
@@ -3853,6 +3865,7 @@ const WORK_SUBS = [
   { key:'hoi',         label:'HOI',                icon:'🏠', wave:6, live:true, custom:'hoi' },
   { key:'sampleFlats', label:'Sample Flats',       icon:'🛏️', wave:6, live:true, custom:'sampleFlats' },
   { key:'commonAreas', label:'Common areas',       icon:'🏛️', live:true, custom:'commonAreas' },
+  { key:'handover',    label:'Handover',           icon:'🔑', live:true, custom:'handover' },
 ];
 function subnavHtml(items, active, getMeta) {
   return `<div class="subnav">${items.map(s => {
@@ -3888,6 +3901,10 @@ async function renderWork() {
   }
   if (sub.custom === 'waterproof') {
     renderWaterproof(container, subnav, sub);
+    return;
+  }
+  if (sub.custom === 'handover') {
+    renderHandover(container, subnav, sub);
     return;
   }
   if (sub.custom === 'facadeItems') {
@@ -4472,6 +4489,169 @@ function commonAreaCellStatus(v) {
   if (u === 'FALSE')                return 'delay';   // not started
   return 'pending';                                    // a date or text note → in progress
 }
+// ─── HANDOVER (per-tower 5-stage flat pipeline) ────────────────────────────
+// Stages are sequential: 1st stage → snag shared → 2nd stage → ready+locked → open for visit.
+const HO_STAGES = [
+  { key:'s1',    label:'1st Stage',      full:'First stage of handover',      match:/first stage/i,            c:'#0e7490', activeBg:'#cffafe', ring:'#a5f3fc' },
+  { key:'snag',  label:'Snag Shared',    full:'Snag List shared for stage 2', match:/snag/i,                   c:'#7c3aed', activeBg:'#f3e8ff', ring:'#e9d5ff' },
+  { key:'s2',    label:'2nd Stage',      full:'Second stage of handover',     match:/second stage/i,           c:'#b45309', activeBg:'#fffbeb', ring:'#fcd34d' },
+  { key:'ready', label:'Ready & Locked', full:'Flat ready and Locked',        match:/ready.*lock/i,            c:'#16a34a', activeBg:'#f0fdf4', ring:'#86efac' },
+];
+function hoTrue(v) { return /^true$/i.test((v || '').trim()); }
+// Furthest stage reached (index into HO_STAGES), or -1 if not started.
+function hoFurthest(stages) { let f = -1; stages.forEach((v, i) => { if (hoTrue(v)) f = i; }); return f; }
+function hoStatusPill(stages) {
+  const f = hoFurthest(stages);
+  if (f < 0) return `<span class="pill" style="background:#f1f5f9;color:#64748b">Not started</span>`;
+  const s = HO_STAGES[f];
+  return `<span class="pill" style="background:${s.activeBg};color:${s.c}">${escapeHtml(s.label)}</span>`;
+}
+function hoCell(v) {
+  if (hoTrue(v)) return `<span class="pill" style="background:#dcfce7;color:#16a34a">✓</span>`;
+  if (/^false$/i.test((v||'').trim())) return `<span class="pill" style="background:#f1f5f9;color:#94a3b8">✗</span>`;
+  const t = (v||'').trim();
+  return t ? `<span class="pill" style="background:#fef3c7;color:#b45309;font-size:9px">${escapeHtml(t)}</span>` : `<span style="color:#cbd5e1">—</span>`;
+}
+// Parse one tower tab → [{tower, flat, type, stages:[5]}]. Column order differs
+// between towers (T1-3: Floor before Area; T4-6: Area before Floor) so columns are
+// located by header name, not index.
+function parseHandoverTab(csv, towerLabel) {
+  const rows = _kwCsvRows(csv);
+  const out = [];
+  let started = false, iArea = -1, iType = -1, sIdx = [];
+  for (const r of rows) {
+    const cells = r.map(c => (c || '').trim());
+    if (!started) {
+      const up = cells.map(c => c.toUpperCase());
+      if (up.some(u => u === 'AREA NAME') && up.some(u => /FIRST STAGE/.test(u))) {
+        iArea = up.findIndex(u => u === 'AREA NAME');
+        iType = up.findIndex(u => /TYPES?\s+OF\s+FLAT/.test(u));
+        sIdx  = HO_STAGES.map(s => cells.findIndex(h => s.match.test(h)));
+        started = true;
+      }
+      continue;
+    }
+    const flat = (cells[iArea] || '').trim();
+    if (!/T0?\d\s*\/\s*\d+/i.test(flat)) continue;   // data rows only
+    out.push({
+      tower: towerLabel,
+      flat:  flat.replace(/\s+/g, ''),
+      type:  iType >= 0 ? (cells[iType] || '') : '',
+      stages: sIdx.map(i => i >= 0 ? (cells[i] || '') : ''),
+    });
+  }
+  return out;
+}
+function hoCard(group, key, label, num, active, palette, desc) {
+  const c = palette.c, bg = active ? palette.activeBg : '#fff';
+  const border = active ? c : '#e2e8f0', rb = palette.ring;
+  return `<button class="card${active?' active':''}" data-hogroup="${group}" data-hokey="${escapeHtml(key)}"
+    style="flex:0 0 auto;min-width:130px;border-color:${border};background:${bg};box-shadow:${active?'0 0 0 3px '+rb:'0 1px 4px rgba(0,0,0,0.05)'}">
+    <div class="card-num" style="color:${c};font-size:22px">${num}</div>
+    <div class="card-label" style="font-size:11px">${escapeHtml(label)}</div>
+    ${desc ? `<div class="card-desc" style="font-size:10px;color:#64748b">${desc}</div>` : ''}
+  </button>`;
+}
+function hoTowerPct(rows) {
+  if (!rows.length) return '—';
+  const li = HO_STAGES.length - 1;   // final tracked stage (Ready & Locked)
+  const done = rows.filter(r => hoTrue(r.stages[li])).length;
+  return `${done}/${rows.length} · ${Math.round(done / rows.length * 100)}%`;
+}
+async function renderHandover(container, subnav, sub) {
+  container.innerHTML = `<div class="eyebrow">${sub.icon} ${escapeHtml(sub.label)} <span class="tag live">LIVE</span></div>${subnav}${liveBar('loading')}<div class="loading">⏳ Pulling Handover list…</div>`;
+  container.querySelectorAll('.sub-btn').forEach(b => {
+    b.addEventListener('click', () => { activeWorkSub = b.dataset.key; renderWork(); });
+  });
+  try {
+    const tabs = SHEET_TABS[FILES.handover] || [];
+    const allRows = [];
+    for (const tab of tabs) {
+      const csv = await fetchSheetTabRaw(FILES.handover, tab.gid).catch(() => '');
+      if (!csv || !csv.trim()) continue;
+      parseHandoverTab(csv, tab.name).forEach(row => allRows.push(row));
+    }
+    if (allRows.length === 0) {
+      container.innerHTML = `<div class="eyebrow">${sub.icon} ${escapeHtml(sub.label)}</div>${subnav}<div class="error"><strong>No rows parsed.</strong> Make sure the Handover sheet is shared "Anyone with the link → Viewer".</div>`;
+      container.querySelectorAll('.sub-btn').forEach(b => { b.addEventListener('click', () => { activeWorkSub = b.dataset.key; renderWork(); }); });
+      return;
+    }
+    const towerNames = tabs.map(t => t.name);
+    if (activeHoTower !== 'all' && !towerNames.includes(activeHoTower)) activeHoTower = 'all';
+    const towerRows = activeHoTower === 'all' ? allRows : allRows.filter(r => r.tower === activeHoTower);
+    // Cumulative stage counts — a flat counts toward every stage it has completed (TRUE).
+    const stageCount = (rows, i) => rows.filter(r => hoTrue(r.stages[i])).length;
+    if (activeHoStage !== 'all' && !HO_STAGES.some(s => s.key === activeHoStage)) activeHoStage = 'all';
+    const stageIdxByKey = k => HO_STAGES.findIndex(s => s.key === k);
+    const filtered = activeHoStage === 'all'
+      ? towerRows
+      : towerRows.filter(r => hoTrue(r.stages[stageIdxByKey(activeHoStage)]));
+    // ── Tower filter cards (flat counts) ──
+    const towerCards = `<div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:0 0 4px 2px">📍 Tower · flats</div><div class="cards" style="overflow-x:auto;flex-wrap:nowrap;padding-bottom:6px">
+      ${hoCard('tower','all','All Units',allRows.length,activeHoTower==='all',{ c:'#1e3a5f', activeBg:'#e0e7ff', ring:'#c7d2fe' }, hoTowerPct(allRows))}
+      ${towerNames.map(t => { const tr = allRows.filter(r => r.tower === t); return tr.length ? hoCard('tower', t, t, tr.length, activeHoTower === t, { c:'#0e7490', activeBg:'#cffafe', ring:'#a5f3fc' }, hoTowerPct(tr)) : ''; }).join('')}
+    </div>`;
+    // ── Stage cards (cumulative — flats that reached each milestone) ──
+    const stageCards = `<div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:10px 0 4px 2px">🔑 Handover stage · out of ${towerRows.length} flats</div><div class="cards" style="overflow-x:auto;flex-wrap:nowrap;padding-bottom:6px">
+      ${hoCard('stage','all','All Flats',towerRows.length,activeHoStage==='all',{ c:'#1e3a5f', activeBg:'#e0e7ff', ring:'#c7d2fe' })}
+      ${HO_STAGES.map((s,i) => { const cnt = stageCount(towerRows, i); const pct = towerRows.length ? Math.round(cnt/towerRows.length*100) : 0;
+        return hoCard('stage', s.key, s.label, cnt, activeHoStage===s.key, s, `${pct}% · of ${towerRows.length}`); }).join('')}
+    </div>`;
+    const stageHeads = HO_STAGES.map(s => `<th style="text-align:center;font-size:10px" title="${escapeHtml(s.full)}">${escapeHtml(s.label)}</th>`).join('');
+    const tableHtml = filtered.length === 0
+      ? `<div class="empty">No flats match these filters.</div>`
+      : `<table style="min-width:880px"><thead><tr>
+          <th>#</th><th>Tower</th><th>Flat</th><th>Type</th>
+          ${stageHeads}
+          <th style="text-align:center">Current stage</th>
+        </tr></thead><tbody>${filtered.map((r,i) => `<tr>
+          <td>${i+1}</td>
+          <td style="font-size:11px;font-weight:700;color:#0e7490">${escapeHtml(r.tower)}</td>
+          <td style="font-family:monospace;font-weight:700;color:#1e3a5f">${escapeHtml(r.flat)}</td>
+          <td style="font-size:11px;color:#64748b">${escapeHtml(r.type||'—')}</td>
+          ${r.stages.map(v => `<td style="text-align:center">${hoCell(v)}</td>`).join('')}
+          <td style="text-align:center">${hoStatusPill(r.stages)}</td>
+        </tr>`).join('')}</tbody></table>`;
+    const scopeParts = [];
+    if (activeHoTower !== 'all')  scopeParts.push(activeHoTower);
+    if (activeHoStage !== 'all')  scopeParts.push((HO_STAGES.find(s=>s.key===activeHoStage)||{}).label + ' reached');
+    const scopeLabel = scopeParts.length === 0 ? 'All towers · all flats' : scopeParts.join(' · ');
+    container.innerHTML = `
+      <div class="eyebrow">${sub.icon} ${escapeHtml(sub.label)} <span class="tag live">LIVE</span></div>
+      ${subnav}
+      ${liveBar('live', allRows.length, 'HHFMT Handover final list')}
+      ${towerCards}
+      ${stageCards}
+      <div style="font-size:11px;color:#64748b;margin:8px 0">Showing: <strong>${escapeHtml(scopeLabel)}</strong> · stage counts are cumulative</div>
+      <div class="tbl-wrap" style="margin-top:8px">
+        <div class="tbl-head" style="background:#eff6ff;border-bottom:1px solid #bfdbfe">
+          <span>🔑</span>
+          <span class="tbl-title" style="color:#1e3a5f">Handover — ${escapeHtml(scopeLabel)}</span>
+          <span class="tbl-count" style="background:#1e3a5f">${filtered.length} flats</span>
+        </div>
+        <div style="overflow-x:auto">${tableHtml}</div>
+      </div>
+      <div style="font-size:11px;color:#94a3b8;text-align:center;margin-top:8px">
+        Source: <a href="https://docs.google.com/spreadsheets/d/${escapeHtml(FILES.handover)}/edit" target="_blank" style="color:#1d4ed8;text-decoration:none">HHFMT Handover final list</a>
+        · Use the Reload button at the top to refresh.
+      </div>`;
+    container.querySelectorAll('.sub-btn').forEach(b => {
+      b.addEventListener('click', () => { activeWorkSub = b.dataset.key; activeHoTower = 'all'; activeHoStage = 'all'; renderWork(); });
+    });
+    container.querySelectorAll('[data-hogroup]').forEach(b => {
+      b.addEventListener('click', () => {
+        const g = b.dataset.hogroup, k = b.dataset.hokey;
+        if (g === 'tower')      { activeHoTower = k; activeHoStage = 'all'; }
+        else if (g === 'stage')   activeHoStage = k;
+        renderWork();
+      });
+    });
+  } catch (e) {
+    container.innerHTML = `<div class="eyebrow">${sub.icon} ${escapeHtml(sub.label)}</div>${subnav}<div class="error"><strong>Failed to load:</strong> ${escapeHtml(e?.message || String(e))}</div>`;
+    container.querySelectorAll('.sub-btn').forEach(b => { b.addEventListener('click', () => { activeWorkSub = b.dataset.key; renderWork(); }); });
+  }
+}
+
 // ─── WATERPROOFING (per-tower: TESTING / PLASTER / PCC + remarks) ──────────
 // Status of one flat×area row is judged ONLY on the three final-stage columns
 // the user asked to report on: TESTING, PLASTER, PCC.
