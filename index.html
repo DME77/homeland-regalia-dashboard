@@ -323,6 +323,7 @@ const FILES = {
   vanity: '1lVaxVDsvSwkCPeD4Fzc2lCvrHYGgQB_IjiNGJyEdRxA',
   doors: '1M7jIV1lz4lLtujr7Itz1AiSKuiZIKDA-7Y331lYo9LA',
   handover: '1yQRAo6GFkubQOAMAcxTyajthH6WyyybAagPDYgSELUg',
+  mechanical: '1vWRTD7HKtdcBDD_SbAaaQNgHZvlLoWxBMIA3A66FwrI',
   mepLabour:      '1dBfjaVVyud5AXhFK3a771p67134FQkOHIaRFGNeioJg',
   planner:        '1EsUx8Ez8-gjfLT5nf8MiOMqYlBubMRWnTl9dgi-7_R4',
   // Index of daily labour reports: columns → Date | Interior File ID | Facade File ID | MEP File ID
@@ -440,6 +441,8 @@ let activeWpTower  = 'all';           // Waterproofing tower filter (TOWER 1..6)
 let activeWpStatus = 'all';           // Waterproofing status filter (done/progress/pending)
 let activeHoTower  = 'all';           // Handover tower filter (TOWER 1..6)
 let activeHoStage  = 'all';           // Handover stage filter (s1/snag/s2/ready/open)
+let activeMechSub    = 'common';      // Mechanical sub-category (common/lobbies/flats/basementLob/basementVent)
+let activeMechStatus = 'all';         // Mechanical status filter (done/progress/pending)
 let activeElevatorStage = 'all';      // Elevators tab: LIFT DETAILS value or 'all'
 let activeContractor    = 'all';      // Elevators tab: contractor filter
 let activeDrawingsDependency = 'all'; // Drawings tab Dependency filter (Dep-1 value)
@@ -530,6 +533,11 @@ function unwrapMcp(res) {
 // To find a tab's GID: open the sheet, click the tab — the URL fragment becomes
 // "#gid=NNNNNNN". Copy that number.
 const SHEET_TABS = {
+  // CCS HVAC — mechanical sub-categories (only configured tabs listed; more TBD)
+  '1vWRTD7HKtdcBDD_SbAaaQNgHZvlLoWxBMIA3A66FwrI': [
+    { gid: 371308310, name: 'Common areas' },
+    { gid: 142843547, name: 'Tower-05 Flats' },
+  ],
   // HHFMT Handover final list — one tab per tower (5-stage handover pipeline)
   '1yQRAo6GFkubQOAMAcxTyajthH6WyyybAagPDYgSELUg': [
     { gid: 0,          name: 'TOWER 1' },
@@ -3853,7 +3861,7 @@ async function renderTendering() {
 const WORK_SUBS = [
   { key:'facade',      label:'Facade',             icon:'🏢', wave:4, live:true },
   { key:'interior',    label:'Interior',           icon:'🛋️', wave:5, live:true },
-  { key:'mechanical',  label:'Mechanical',         icon:'🌡️', wave:2, live:true },
+  { key:'mechanical',  label:'Mechanical',         icon:'🌡️', wave:2, live:true, custom:'mechanical' },
   { key:'electrical',  label:'Electrical',         icon:'⚡',  wave:3, live:true },
   { key:'fire',        label:'Fire',               icon:'🔥', wave:3, live:true },
   { key:'plumbing',    label:'Plumbing',           icon:'🚿', wave:2, live:true },
@@ -3905,6 +3913,10 @@ async function renderWork() {
   }
   if (sub.custom === 'handover') {
     renderHandover(container, subnav, sub);
+    return;
+  }
+  if (sub.custom === 'mechanical') {
+    renderMechanical(container, subnav, sub);
     return;
   }
   if (sub.custom === 'facadeItems') {
@@ -4489,6 +4501,159 @@ function commonAreaCellStatus(v) {
   if (u === 'FALSE')                return 'delay';   // not started
   return 'pending';                                    // a date or text note → in progress
 }
+// ─── MECHANICAL (CCS HVAC — 5 sub-categories) ──────────────────────────────
+// Sub-categories. Only tabs with a confirmed GID are live; the rest are
+// placeholders until the user supplies their tab GIDs.
+const MECH_SUBS = [
+  { key:'common',       label:'Common areas',        icon:'🏛️', gid:371308310 },
+  { key:'lobbies',      label:'Lobbies',             icon:'🛗', gid:null },        // 6 tower tabs — TBD
+  { key:'flats',        label:'Flats',               icon:'🚪', gid:142843547 },
+  { key:'basementLob',  label:'Basements Lobbies',   icon:'🅿️', gid:null },        // TBD
+  { key:'basementVent', label:'Basement ventilation',icon:'🌀', gid:null },        // TBD
+];
+const MECH_STATUS_TABS = [
+  { key:'done',     label:'Done',        icon:'✅', color:'#16a34a', bg:'#f0fdf4', border:'#86efac', desc:'All stages done' },
+  { key:'progress', label:'In Progress', icon:'🕐', color:'#b45309', bg:'#fffbeb', border:'#fcd34d', desc:'Some stages done' },
+  { key:'pending',  label:'Pending',     icon:'⚪', color:'#64748b', bg:'#f8fafc', border:'#cbd5e1', desc:'Nothing done yet' },
+];
+// A header is a label/meta column (not a work stage) if it matches these.
+function _hvacIsMeta(name) {
+  return /^(levels?|area|areas|area name|floor|basement|s\.?\s*no\.?|record|tower[-\s]?\d*)$/i.test((name || '').trim());
+}
+// One HVAC stage cell → status contribution.
+// NA/N-A → not applicable (excluded). TRUE → done. blank/FALSE/text → not done.
+function _hvacCellDone(v) { return /^true$/i.test((v || '').trim()); }
+function _hvacCellNA(v)   { const u = (v || '').trim().toUpperCase(); return u === 'NA' || u === 'N/A'; }
+// Parse one HVAC tab → { stageNames:[], items:[{group,label,stages:[{name,val}],done,total,pending[],status}] }
+function parseHvacTab(csv) {
+  const rows = _kwCsvRows(csv);
+  if (!rows.length) return { stageNames: [], items: [] };
+  let h = 0;
+  while (h < rows.length && rows[h].filter(c => (c || '').trim()).length < 4) h++;
+  const header = (rows[h] || []).map(c => (c || '').trim());
+  const stageCols = [], labelCols = [];
+  header.forEach((nm, i) => { if (!nm) return; (_hvacIsMeta(nm) ? labelCols : stageCols).push({ i, name: nm }); });
+  const grpIdx = labelCols.length ? labelCols[0].i : 0;
+  let grp = '';
+  const items = [];
+  for (let r = h + 1; r < rows.length; r++) {
+    const c = (rows[r] || []).map(x => (x || '').trim());
+    if (c[grpIdx]) grp = c[grpIdx];
+    let label = '';
+    for (let k = labelCols.length - 1; k >= 1; k--) { if (c[labelCols[k].i]) { label = c[labelCols[k].i]; break; } }
+    if (!label) continue;   // skip filler rows with no area/floor label
+    const stages = stageCols.map(sc => ({ name: sc.name, val: c[sc.i] || '' }));
+    let done = 0, total = 0; const pending = [];
+    stages.forEach(s => {
+      if (_hvacCellNA(s.val)) return;       // not applicable
+      total++;
+      if (_hvacCellDone(s.val)) done++;
+      else pending.push(s);
+    });
+    const status = total === 0 ? 'pending' : (done === total ? 'done' : (done === 0 ? 'pending' : 'progress'));
+    items.push({ group: grp, label, stages, done, total, pending, status });
+  }
+  return { stageNames: stageCols.map(s => s.name), items };
+}
+async function renderMechanical(container, subnav, sub) {
+  if (!MECH_SUBS.some(s => s.key === activeMechSub)) activeMechSub = 'common';
+  const mechSub = MECH_SUBS.find(s => s.key === activeMechSub);
+  const subCards = `<div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:0 0 6px 2px">🌡️ CCS HVAC · sub-category</div><div class="cards" style="overflow-x:auto;flex-wrap:nowrap;padding-bottom:6px;margin-bottom:6px">
+    ${MECH_SUBS.map(s => { const isA = activeMechSub === s.key; const ready = s.gid != null;
+      return `<button class="card${isA?' active':''}" data-mechsub="${s.key}" style="flex:0 0 auto;min-width:130px;border-color:${isA?'#0e7490':'#e2e8f0'};background:${isA?'#cffafe':'#fff'};opacity:${ready?1:0.6}">
+        <div class="card-icon">${s.icon}</div>
+        <div class="card-label" style="font-size:11px">${escapeHtml(s.label)}</div>
+        <div class="card-desc" style="font-size:10px;color:${ready?'#16a34a':'#94a3b8'}">${ready?'🟢 Live':'Soon'}</div>
+      </button>`; }).join('')}
+  </div>`;
+  const headHtml = `<div class="eyebrow">${sub.icon} ${escapeHtml(sub.label)} <span class="tag live">LIVE</span></div>${subnav}`;
+  const bindSubnav = () => {
+    container.querySelectorAll('.sub-btn').forEach(b => { b.addEventListener('click', () => { activeWorkSub = b.dataset.key; renderWork(); }); });
+    container.querySelectorAll('[data-mechsub]').forEach(b => { b.addEventListener('click', () => { activeMechSub = b.dataset.mechsub; activeMechStatus = 'all'; renderWork(); }); });
+  };
+  // Placeholder for not-yet-configured sub-categories.
+  if (mechSub.gid == null) {
+    container.innerHTML = `${headHtml}${subCards}
+      ${placeholderHtml(`${mechSub.label} — awaiting tab GID`, `This HVAC sub-category isn't wired up yet. Share its tab GID and I'll connect it.`)}`;
+    bindSubnav();
+    return;
+  }
+  container.innerHTML = `${headHtml}${subCards}${liveBar('loading')}<div class="loading">⏳ Pulling ${escapeHtml(mechSub.label)}…</div>`;
+  bindSubnav();
+  try {
+    const csv = await fetchSheetTabRaw(FILES.mechanical, mechSub.gid).catch(() => '');
+    const { items } = parseHvacTab(csv);
+    if (items.length === 0) {
+      container.innerHTML = `${headHtml}${subCards}<div class="error"><strong>No rows parsed</strong> for ${escapeHtml(mechSub.label)}. Make sure the CCS HVAC sheet is shared "Anyone with the link → Viewer".</div>`;
+      bindSubnav();
+      return;
+    }
+    if (activeMechStatus !== 'all' && !MECH_STATUS_TABS.some(s => s.key === activeMechStatus)) activeMechStatus = 'all';
+    const counts = { all: items.length, done:0, progress:0, pending:0 };
+    items.forEach(it => counts[it.status]++);
+    const filtered = activeMechStatus === 'all' ? items : items.filter(it => it.status === activeMechStatus);
+    const statusCards = `<div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:6px 0 4px 2px">📊 Status · out of ${items.length} areas</div><div class="cards">
+      <button class="card${activeMechStatus==='all'?' active':''}" data-mechstatus="all" style="cursor:pointer;border-color:${activeMechStatus==='all'?'#1e3a5f':'#e2e8f0'};background:${activeMechStatus==='all'?'#e0e7ff':'#fff'}">
+        <div class="card-num" style="color:#1e3a5f">${items.length}</div><div class="card-label">All Areas</div></button>
+      ${MECH_STATUS_TABS.map(t => { const pct = items.length ? Math.round((counts[t.key]||0)/items.length*100) : 0; const isA = activeMechStatus===t.key;
+        return `<button class="card${isA?' active':''}" data-mechstatus="${t.key}"
+          style="cursor:pointer;border-color:${isA?t.color:'#e2e8f0'};background:${isA?t.bg:'#fff'};box-shadow:${isA?'0 0 0 3px '+t.border:'0 1px 4px rgba(0,0,0,0.05)'}">
+          <div class="card-icon">${t.icon}</div>
+          <div class="card-num" style="color:${t.color}">${counts[t.key]||0}</div>
+          <div class="card-label">${escapeHtml(t.label)}</div>
+          <div class="card-desc">${escapeHtml(t.desc)}</div>
+          <div class="bar-row" style="margin-top:8px"><div class="bar-outer"><div class="bar-inner" style="width:${pct}%;background:${t.color}"></div></div><span class="bar-pct" style="color:${t.color}">${pct}%</span></div>
+        </button>`; }).join('')}
+    </div>`;
+    const hasGroup = items.some(it => it.group && it.group !== it.label && !/^\d+$/.test(it.group));
+    const tableHtml = filtered.length === 0
+      ? `<div class="empty">No areas in this status.</div>`
+      : `<table style="min-width:920px"><thead><tr>
+          <th>#</th>${hasGroup?'<th>Location</th>':''}<th>Area</th>
+          <th style="text-align:center;min-width:160px">Status · Progress</th>
+          <th>Pending stages</th>
+        </tr></thead><tbody>${filtered.map((it,i) => {
+          const pct = it.total ? Math.round(it.done/it.total*100) : 0;
+          const barColor = it.status==='done'?'#16a34a':it.status==='pending'?'#94a3b8':'#b45309';
+          const pend = it.pending.length === 0
+            ? '<span style="color:#16a34a;font-weight:600">All stages done</span>'
+            : it.pending.map(p => { const v=(p.val||'').trim(); const isFalseOrBlank = v==='' || /^false$/i.test(v);
+                const bg = isFalseOrBlank?'#fef2f2':'#fef3c7'; const c = isFalseOrBlank?'#dc2626':'#b45309';
+                const lbl = isFalseOrBlank ? p.name : `${p.name}: ${v}`;
+                return `<span class="pill" style="background:${bg};color:${c};font-size:10px;margin:1px 2px 1px 0">${escapeHtml(lbl)}</span>`; }).join('');
+          return `<tr>
+            <td>${i+1}</td>
+            ${hasGroup?`<td style="font-size:11px;color:#64748b">${escapeHtml(it.group||'')}</td>`:''}
+            <td style="font-weight:600;color:#1e3a5f">${escapeHtml(it.label)}</td>
+            <td><div style="display:flex;align-items:center;gap:8px"><div class="bar-outer" style="flex:1"><div class="bar-inner" style="width:${pct}%;background:${barColor}"></div></div><span style="font-size:11px;font-weight:700;color:${barColor};min-width:62px">${it.done}/${it.total} · ${pct}%</span></div></td>
+            <td>${pend}</td>
+          </tr>`; }).join('')}</tbody></table>`;
+    const scopeLabel = mechSub.label + (activeMechStatus==='all'?'':' · '+(MECH_STATUS_TABS.find(s=>s.key===activeMechStatus)||{}).label);
+    container.innerHTML = `${headHtml}${subCards}
+      ${liveBar('live', items.length, 'CCS HVAC Cont.')}
+      ${statusCards}
+      <div class="tbl-wrap" style="margin-top:8px">
+        <div class="tbl-head" style="background:#eff6ff;border-bottom:1px solid #bfdbfe">
+          <span>${mechSub.icon}</span>
+          <span class="tbl-title" style="color:#1e3a5f">HVAC — ${escapeHtml(scopeLabel)}</span>
+          <span class="tbl-count" style="background:#1e3a5f">${filtered.length} areas</span>
+        </div>
+        <div style="overflow-x:auto">${tableHtml}</div>
+      </div>
+      <div style="font-size:11px;color:#94a3b8;text-align:center;margin-top:8px">
+        Source: <a href="https://docs.google.com/spreadsheets/d/${escapeHtml(FILES.mechanical)}/edit" target="_blank" style="color:#1d4ed8;text-decoration:none">CCS HVAC Cont.</a>
+        · Use the Reload button at the top to refresh.
+      </div>`;
+    bindSubnav();
+    container.querySelectorAll('[data-mechstatus]').forEach(b => {
+      b.addEventListener('click', () => { activeMechStatus = b.dataset.mechstatus; renderWork(); });
+    });
+  } catch (e) {
+    container.innerHTML = `${headHtml}${subCards}<div class="error"><strong>Failed to load:</strong> ${escapeHtml(e?.message || String(e))}</div>`;
+    bindSubnav();
+  }
+}
+
 // ─── HANDOVER (per-tower 5-stage flat pipeline) ────────────────────────────
 // Stages are sequential: 1st stage → snag shared → 2nd stage → ready+locked → open for visit.
 const HO_STAGES = [
