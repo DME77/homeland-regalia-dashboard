@@ -1671,6 +1671,19 @@ function _isPastDateCell(v) {
   const today = new Date(); today.setHours(0,0,0,0);
   return dt < today;
 }
+// Parse a cell into a Date (midnight) if it holds a recognizable date, else null.
+function _cellDate(v) {
+  const raw = (v || '').trim();
+  const MONTHS = { jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11 };
+  const dm = raw.match(/^(\d{1,2})[-\s]([a-zA-Z]+)(?:[-\s](\d{2,4}))?$/);
+  if (!dm) return null;
+  const mon = MONTHS[(dm[2]||'').slice(0,3).toLowerCase()];
+  if (mon === undefined) return null;
+  const yr = dm[3] ? (dm[3].length===2 ? 2000+parseInt(dm[3]) : parseInt(dm[3])) : new Date().getFullYear();
+  const dt = new Date(yr, mon, parseInt(dm[1]));
+  dt.setHours(0,0,0,0);
+  return dt;
+}
 // True when the cell is an actual date that is today or in the future (a live
 // schedule). Used by Interior Execution for the "On Schedule" bucket.
 function _isFutureDateCell(v) {
@@ -2811,6 +2824,16 @@ function parseInteriorExecution(md, contractorTag, defaultTower) {
     else if (scheduleNotes.length > 0)            status = 'on-schedule';
     else                                          status = 'pending';
     const remark = (status === 'on-schedule' ? scheduleNotes : delayNotes).slice(0, 3).join('; ');
+    // For delayed flats: find the EARLIEST overdue dated cell and the stage (header)
+    // it sits in — that's where the flat is first stuck.
+    let delayStage = '', delayDate = '', delayDateObj = null;
+    if (status === 'delay') {
+      states.forEach((s, j) => {
+        if (!_isPastDateCell(s)) return;
+        const d = _cellDate(s);
+        if (d && (!delayDateObj || d < delayDateObj)) { delayDateObj = d; delayDate = s.trim(); delayStage = stageNames[j] || ''; }
+      });
+    }
     items.push({
       contractor,
       tower,
@@ -2819,6 +2842,7 @@ function parseInteriorExecution(md, contractorTag, defaultTower) {
       total:   totalReal || stageIdxs.length,
       states, stageNames,
       status, remark,
+      delayStage, delayDate,
     });
   }
   return items;
@@ -4068,6 +4092,8 @@ async function renderWork() {
     const pillText = { done:'Done', delay:'Delayed / Partial', pending:'Pending', 'on-schedule':'On Schedule' };
     const cap = 300;
     const display = filtered.slice(0, cap);
+    // Interior "Delayed" view: extra column showing the earliest overdue stage + its date.
+    const showStuckCol = sub.key === 'interior' && activeWorkStatus === 'delay';
     // Hide the Item/Contractor column when filtered to a single item
     // Hide Tower column when there is only one unique tower in the current items set OR a specific location is selected
     const showLabelCol = allItemNames.length >= 2 && activeWorkItem === 'all';
@@ -4206,12 +4232,13 @@ async function renderWork() {
             </tr>`;
           }).join('')
           }</tbody></table>${filtered.length>cap?`<div style="padding:10px 12px;font-size:11px;color:#94a3b8;text-align:center">Showing first ${cap} of ${filtered.length}</div>`:''}`
-        : `<table><thead><tr><th>#</th>${labelHeader}${showTowerCol?'<th>Tower</th>':''}<th>Location</th><th>Work Completion</th><th style="text-align:center">Status</th><th>Remark</th></tr></thead><tbody>${
+        : `<table><thead><tr><th>#</th>${labelHeader}${showTowerCol?'<th>Tower</th>':''}<th>Location</th>${showStuckCol?'<th>Stuck at (stage · earliest date)</th>':''}<th>Work Completion</th><th style="text-align:center">Status</th><th>Remark</th></tr></thead><tbody>${
           display.map((r,i) => `<tr>
             <td>${i+1}</td>
             ${showLabelCol?`<td style="font-weight:600;color:#475569">${escapeHtml(r.contractor||'—')}</td>`:''}
             ${showTowerCol?`<td style="font-weight:600;color:#1e3a5f">${escapeHtml(r.tower||'—')}</td>`:''}
             <td class="loc">${escapeHtml(r.label)}</td>
+            ${showStuckCol?`<td>${r.delayStage ? `<span style="font-weight:700;color:#b91c1c">${escapeHtml(r.delayStage)}</span>${r.delayDate?` <span class="pill" style="background:#fee2e2;color:#dc2626;font-size:10px">${escapeHtml(r.delayDate)}</span>`:''}` : '<span style="color:#d1d5db">—</span>'}</td>`:''}
             <td>${(() => {
                 const pct = Math.round((r.done / Math.max(r.total, 1)) * 100);
                 const c  = pct === 100 ? '#16a34a' : pct === 0 ? '#94a3b8' : '#b45309';
