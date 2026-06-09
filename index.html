@@ -531,7 +531,7 @@ const SHEET_TABS = {
   ],
   // PLANNER HLR — Common areas (tab 0) + Watcon
   '1EsUx8Ez8-gjfLT5nf8MiOMqYlBubMRWnTl9dgi-7_R4': [
-    { gid: 0,          name: 'COMMON AREAS' },
+    { gid: 2145657956, name: 'COMMON AREAS' },
     { gid: 1341448177, name: 'WATCON' },
   ],
   // Elevators — ALL LIFTS STATUS tab
@@ -3078,14 +3078,18 @@ function parseCommonAreas(md) {
         || area.toLowerCase() === 's.no.' || area.toLowerCase() === 'so no'
         || area.toLowerCase() === 'lift details' || area.toLowerCase() === 'item') break;
     const states = stageNames.map((_, j) => (c[j+1] || '').trim());
-    const trueCount  = states.filter(s => s.toUpperCase() === 'TRUE').length;
-    const naCount    = states.filter(s => /^NA$/i.test(s) || s === '').length;
-    const totalReal  = stageNames.length - naCount;
+    // Signages and HO to HHFMT are NOT execution stages — exclude them from the
+    // combined status / progress / pending counts (they still show in column mode).
+    const isCounted = n => !/signage/i.test(n) && !/hhfmt|ho\s*to\s*h/i.test(n);
+    const counted = stageNames.map((n, j) => ({ n, j })).filter(x => isCounted(x.n));
+    const trueCount  = counted.filter(x => states[x.j].toUpperCase() === 'TRUE').length;
+    const naCount    = counted.filter(x => /^NA$/i.test(states[x.j]) || states[x.j] === '').length;
+    const totalReal  = counted.length - naCount;
     const pending = [];
-    states.forEach((s, j) => {
-      const u = s.toUpperCase();
+    counted.forEach(({ n, j }) => {
+      const s = states[j], u = s.toUpperCase();
       if (u === 'NA' || u === 'N/A' || s === '' || u === 'TRUE') return;
-      pending.push({ stage: stageNames[j], value: s });
+      pending.push({ stage: n, value: s });
     });
     // Row-level status. Per-request semantics for Common areas:
     //   • all non-NA stages TRUE         → Done
@@ -4408,6 +4412,24 @@ const COMMON_AREAS_STATUS_TABS = [
   { key:'delay',   label:'Delayed', icon:'🔴', color:'#dc2626', bg:'#fef2f2', border:'#fca5a5', desc:'Nothing started · overdue' },
 ];
 let activeCommonAreasStatus = 'pending';
+let activeCommonAreasCol = 'all';   // Common areas discipline/column filter
+// Discipline columns the report can be sliced by (matched to header names).
+const COMMON_AREAS_COLS = [
+  { key:'plumbing',    label:'Plumbing',        match:/^\s*plumbing/i },
+  { key:'electrical',  label:'Electrical',      match:/^\s*electrical/i },
+  { key:'fire',        label:'Fire Fighting',   match:/fire\s*fighting/i },
+  { key:'hvac',        label:'HVAC',            match:/^\s*hvac/i },
+  { key:'interior',    label:'Interior',        match:/^\s*interior\s*$/i },
+  { key:'purchasable', label:'Purchasable List',match:/purchasab/i },
+];
+// Status of a single discipline cell.
+function commonAreaCellStatus(v) {
+  const u = String(v || '').trim().toUpperCase();
+  if (u === 'TRUE')                 return 'done';
+  if (u === 'NA' || u === 'N/A' || u === '') return 'na';
+  if (u === 'FALSE')                return 'delay';   // not started
+  return 'pending';                                    // a date or text note → in progress
+}
 async function renderCommonAreas(container, subnav, sub) {
   container.innerHTML = `<div class="eyebrow">${sub.icon} ${escapeHtml(sub.label)} <span class="tag live">LIVE</span></div>${subnav}${liveBar('loading')}<div class="loading">⏳ Pulling from Drive…</div>`;
   container.querySelectorAll('.sub-btn').forEach(b => {
@@ -4420,17 +4442,51 @@ async function renderCommonAreas(container, subnav, sub) {
       container.querySelectorAll('.sub-btn').forEach(b => { b.addEventListener('click', () => { activeWorkSub = b.dataset.key; renderWork(); }); });
       return;
     }
+    // ── Discipline (column) slice ──
+    const colDef = COMMON_AREAS_COLS.find(c => c.key === activeCommonAreasCol);
+    const colMode = !!colDef;
+    const colVal = r => { const idx = r.stageNames.findIndex(n => colDef.match.test(n)); return idx >= 0 ? (r.states[idx] || '') : ''; };
+    // Working rows carry an effective status (and the raw cell value in column mode);
+    // N/A areas are dropped when a single discipline is selected.
+    const work = items.map(r => {
+      if (!colMode) return { r, eff: r.status, val: '' };
+      const v = colVal(r); return { r, eff: commonAreaCellStatus(v), val: v };
+    }).filter(x => x.eff !== 'na');
+    // Column-card counts (per discipline, across all areas) for the filter row.
+    const colCount = (col) => {
+      let done = 0, applic = 0;
+      items.forEach(r => {
+        const idx = r.stageNames.findIndex(n => col.match.test(n));
+        const st = commonAreaCellStatus(idx >= 0 ? r.states[idx] : '');
+        if (st === 'na') return; applic++; if (st === 'done') done++;
+      });
+      return { done, applic };
+    };
     const counts = { done:0, delay:0, pending:0 };
-    items.forEach(r => counts[r.status]++);
+    work.forEach(x => counts[x.eff]++);
     // Per-status progress (sum of done stages / sum of total stages within bucket).
     const groupStats = { done:{done:0,total:0}, delay:{done:0,total:0}, pending:{done:0,total:0} };
-    items.forEach(r => { groupStats[r.status].done += r.done; groupStats[r.status].total += r.total; });
+    work.forEach(x => {
+      const g = groupStats[x.eff];
+      if (colMode) { g.total += 1; if (x.eff === 'done') g.done += 1; }
+      else { g.done += x.r.done; g.total += x.r.total; }
+    });
     const groupPct = (k) => {
       const g = groupStats[k];
       return g.total ? Math.round(g.done / g.total * 100) : 0;
     };
     const tab = COMMON_AREAS_STATUS_TABS.find(t => t.key === activeCommonAreasStatus) || COMMON_AREAS_STATUS_TABS[1];
-    const filtered = items.filter(r => r.status === activeCommonAreasStatus);
+    const filtered = work.filter(x => x.eff === activeCommonAreasStatus);
+    // Discipline filter cards (All + the 6 requested columns).
+    const colCardsHtml = `<div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:0 0 4px 2px">🔧 Discipline</div><div class="cards" style="overflow-x:auto;flex-wrap:nowrap;padding-bottom:6px;margin-bottom:10px">
+      <button class="card${activeCommonAreasCol==='all'?' active':''}" data-ca-col="all" style="flex:0 0 auto;min-width:120px;border-color:${activeCommonAreasCol==='all'?'#1e3a5f':'#e2e8f0'};background:${activeCommonAreasCol==='all'?'#e0e7ff':'#fff'}">
+        <div class="card-num" style="color:#1e3a5f;font-size:20px">${items.length}</div><div class="card-label" style="font-size:11px">All disciplines</div></button>
+      ${COMMON_AREAS_COLS.map(col => { const cc = colCount(col); const act = activeCommonAreasCol===col.key;
+        return `<button class="card${act?' active':''}" data-ca-col="${col.key}" style="flex:0 0 auto;min-width:130px;border-color:${act?'#0e7490':'#e2e8f0'};background:${act?'#cffafe':'#fff'}">
+          <div class="card-num" style="color:#0e7490;font-size:20px">${cc.done}</div>
+          <div class="card-label" style="font-size:11px">${escapeHtml(col.label)}</div>
+          <div class="card-desc" style="font-size:10px">of ${cc.applic} done</div></button>`; }).join('')}
+    </div>`;
     // Clickable status cards with embedded progress (replaces the old KPI strip).
     const cardsHtml = `<div class="cards">${COMMON_AREAS_STATUS_TABS.map(t => {
       const isA = activeCommonAreasStatus === t.key;
@@ -4452,34 +4508,45 @@ async function renderCommonAreas(container, subnav, sub) {
       pending: 'background:#fef3c7;color:#b45309',
     };
     const pillText = { done:'Done', delay:'Delayed', pending:'Pending' };
+    const lastColHead = colMode ? escapeHtml(colDef.label) + ' value' : 'Pending stages';
     const tableHtml = filtered.length === 0
       ? `<div class="empty">No areas in this status.</div>`
       : `<table style="min-width:1000px"><thead><tr>
           <th>#</th>
           <th>Area</th>
-          <th style="text-align:center;min-width:160px">Status · Progress</th>
-          <th>Pending stages</th>
+          <th style="text-align:center;min-width:160px">Status${colMode ? '' : ' · Progress'}</th>
+          <th>${lastColHead}</th>
         </tr></thead><tbody>${
-          filtered.map((r, i) => {
-            const pct = r.total ? Math.round(r.done / r.total * 100) : 0;
-            const barColor = r.status === 'done' ? '#16a34a' : r.status === 'delay' ? '#dc2626' : '#b45309';
-            const pendingChips = r.pending.length === 0
-              ? '<span style="color:#16a34a;font-weight:600">All stages done</span>'
-              : r.pending.map(p => {
-                  const isFalse = (p.value||'').toUpperCase() === 'FALSE' || p.value === '';
-                  const bg = isFalse ? '#fef2f2' : '#fef3c7';
-                  const c  = isFalse ? '#dc2626' : '#b45309';
-                  const label = isFalse ? p.stage : `${p.stage}: ${p.value}`;
-                  return `<span class="pill" style="background:${bg};color:${c};font-size:10px;margin:1px 2px 1px 0">${escapeHtml(label)}</span>`;
-                }).join('');
+          filtered.map((x, i) => {
+            const r = x.r;
+            const eff = x.eff;
+            const pct = colMode ? (eff === 'done' ? 100 : 0) : (r.total ? Math.round(r.done / r.total * 100) : 0);
+            const barColor = eff === 'done' ? '#16a34a' : eff === 'delay' ? '#dc2626' : '#b45309';
+            let lastCell;
+            if (colMode) {
+              const v = (x.val || '').trim();
+              lastCell = v && v.toUpperCase() !== 'FALSE'
+                ? `<span class="pill" style="background:#fef3c7;color:#b45309;font-size:10px">${escapeHtml(v)}</span>`
+                : (eff === 'done' ? '<span style="color:#16a34a;font-weight:600">Done</span>' : '<span class="pill" style="background:#fef2f2;color:#dc2626;font-size:10px">Not started</span>');
+            } else {
+              lastCell = r.pending.length === 0
+                ? '<span style="color:#16a34a;font-weight:600">All stages done</span>'
+                : r.pending.map(p => {
+                    const isFalse = (p.value||'').toUpperCase() === 'FALSE' || p.value === '';
+                    const bg = isFalse ? '#fef2f2' : '#fef3c7';
+                    const c  = isFalse ? '#dc2626' : '#b45309';
+                    const label = isFalse ? p.stage : `${p.stage}: ${p.value}`;
+                    return `<span class="pill" style="background:${bg};color:${c};font-size:10px;margin:1px 2px 1px 0">${escapeHtml(label)}</span>`;
+                  }).join('');
+            }
             return `<tr>
               <td>${i+1}</td>
-              <td class="loc">${escapeHtml(r.area)}<div style="font-size:10px;color:#94a3b8;margin-top:2px">${r.done}/${r.total} stages done${r.naCount?` · ${r.naCount} N/A`:''}</div></td>
+              <td class="loc">${escapeHtml(r.area)}${colMode ? '' : `<div style="font-size:10px;color:#94a3b8;margin-top:2px">${r.done}/${r.total} stages done${r.naCount?` · ${r.naCount} N/A`:''}</div>`}</td>
               <td style="text-align:center">
-                <span class="pill" style="${pillStyles[r.status]}">${pillText[r.status]} · ${pct}%</span>
-                <div class="bar-row" style="margin-top:6px"><div class="bar-outer"><div class="bar-inner" style="width:${pct}%;background:${barColor}"></div></div></div>
+                <span class="pill" style="${pillStyles[eff]}">${pillText[eff]}${colMode ? '' : ' · ' + pct + '%'}</span>
+                ${colMode ? '' : `<div class="bar-row" style="margin-top:6px"><div class="bar-outer"><div class="bar-inner" style="width:${pct}%;background:${barColor}"></div></div></div>`}
               </td>
-              <td style="line-height:1.6">${pendingChips}</td>
+              <td style="line-height:1.6">${lastCell}</td>
             </tr>`;
           }).join('')
         }</tbody></table>`;
@@ -4487,7 +4554,8 @@ async function renderCommonAreas(container, subnav, sub) {
       <div class="eyebrow">${sub.icon} ${escapeHtml(sub.label)} <span class="tag live">LIVE</span></div>
       ${subnav}
       ${liveBar('live', items.length, 'PLANNER HLR · Common areas tab')}
-      <div style="font-size:11px;color:#64748b;margin-bottom:8px">Click a card below to filter the list. Each card shows count, label, and the % of stages completed within that bucket.</div>
+      ${colCardsHtml}
+      <div style="font-size:11px;color:#64748b;margin-bottom:8px">Pick a discipline to slice the report, then a status below. ${colMode ? `Showing <strong>${escapeHtml(colDef.label)}</strong> status per area.` : 'Showing combined status across all stages.'}</div>
       ${cardsHtml}
       <div class="tbl-wrap" style="border-color:${tab.border}">
         <div class="tbl-head" style="background:${tab.bg};border-bottom:1px solid ${tab.border}">
@@ -4504,8 +4572,11 @@ async function renderCommonAreas(container, subnav, sub) {
     container.querySelectorAll('.sub-btn').forEach(b => {
       b.addEventListener('click', () => { activeWorkSub = b.dataset.key; renderWork(); });
     });
-    container.querySelectorAll('.card').forEach(b => {
+    container.querySelectorAll('[data-status]').forEach(b => {
       b.addEventListener('click', () => { activeCommonAreasStatus = b.dataset.status; renderWork(); });
+    });
+    container.querySelectorAll('[data-ca-col]').forEach(b => {
+      b.addEventListener('click', () => { activeCommonAreasCol = b.dataset.caCol; renderWork(); });
     });
   } catch (e) {
     container.innerHTML = `<div class="eyebrow">${sub.icon} ${escapeHtml(sub.label)}</div>${subnav}<div class="error"><strong>Failed to load:</strong> ${escapeHtml(e?.message || String(e))}</div>`;
