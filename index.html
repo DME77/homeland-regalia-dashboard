@@ -435,6 +435,8 @@ let activeBaffleType    = 'all'; // Baffle Ceiling work-type sub-filter: all | F
 let activeDrawingsStatus = 'pending'; // Drawings tab default status filter
 let activeDrawingsLocation = 'all';   // Drawings tab Location filter
 let activeHoiSection = 'flats';       // HOI category: 'flats' or 'items'
+let activeWpTower  = 'all';           // Waterproofing tower filter (TOWER 1..6)
+let activeWpStatus = 'all';           // Waterproofing status filter (done/progress/pending)
 let activeElevatorStage = 'all';      // Elevators tab: LIFT DETAILS value or 'all'
 let activeContractor    = 'all';      // Elevators tab: contractor filter
 let activeDrawingsDependency = 'all'; // Drawings tab Dependency filter (Dep-1 value)
@@ -525,6 +527,15 @@ function unwrapMcp(res) {
 // To find a tab's GID: open the sheet, click the tab — the URL fragment becomes
 // "#gid=NNNNNNN". Copy that number.
 const SHEET_TABS = {
+  // Waterproofing records — one tab per tower (TESTING / PLASTER / PCC report)
+  '1MoE-MyuIGQ1BhWFnFTwjcWhcwcglkjkK4BR9wx3oBOo': [
+    { gid: 357401033,  name: 'TOWER 1' },
+    { gid: 1592597913, name: 'TOWER 2' },
+    { gid: 0,          name: 'TOWER 3' },
+    { gid: 1141766378, name: 'TOWER 4' },
+    { gid: 1681252816, name: 'TOWER 5' },
+    { gid: 860280137,  name: 'TOWER 6' },
+  ],
   // DWG status — "Final list" tab (Dependency 1 / Timeline / Status)
   '1gcBXrpnX5254HViYX-EwWqsWli51MAvDWZcZUQC4i5g': [
     { gid: 1759871205, name: 'Final list' },
@@ -3810,7 +3821,7 @@ const WORK_SUBS = [
   { key:'electrical',  label:'Electrical',         icon:'⚡',  wave:3, live:true },
   { key:'fire',        label:'Fire',               icon:'🔥', wave:3, live:true },
   { key:'plumbing',    label:'Plumbing',           icon:'🚿', wave:2, live:true },
-  { key:'waterproof',  label:'Waterproofing',      icon:'💧', wave:1, live:true },
+  { key:'waterproof',  label:'Waterproofing',      icon:'💧', wave:1, live:true, custom:'waterproof' },
   { key:'civil',       label:'Civil',              icon:'🧱', wave:5, live:true },
   { key:'civilFacade', label:'Civil Facade',       icon:'🏛️', wave:5, live:true },
   { key:'landscape',   label:'Landscape Civil',    icon:'🌿', wave:5, live:true },
@@ -3849,6 +3860,10 @@ async function renderWork() {
   }
   if (sub.custom === 'commonAreas') {
     renderCommonAreas(container, subnav, sub);
+    return;
+  }
+  if (sub.custom === 'waterproof') {
+    renderWaterproof(container, subnav, sub);
     return;
   }
   if (sub.custom === 'facadeItems') {
@@ -4430,6 +4445,205 @@ function commonAreaCellStatus(v) {
   if (u === 'FALSE')                return 'delay';   // not started
   return 'pending';                                    // a date or text note → in progress
 }
+// ─── WATERPROOFING (per-tower: TESTING / PLASTER / PCC + remarks) ──────────
+// Status of one flat×area row is judged ONLY on the three final-stage columns
+// the user asked to report on: TESTING, PLASTER, PCC.
+const WP_STATUS_TABS = [
+  { key:'done',     label:'Done',        icon:'✅', color:'#16a34a', bg:'#f0fdf4', border:'#86efac', desc:'Testing + Plaster + PCC done' },
+  { key:'progress', label:'In Progress', icon:'🕐', color:'#b45309', bg:'#fffbeb', border:'#fcd34d', desc:'Some of the 3 done' },
+  { key:'pending',  label:'Pending',     icon:'⚪', color:'#64748b', bg:'#f8fafc', border:'#cbd5e1', desc:'None of the 3 done' },
+];
+function wpTrue(v) { return /^true$/i.test((v || '').trim()); }
+function wpRowStatus(row) {
+  const t = [row.testing, row.plaster, row.pcc].filter(wpTrue).length;
+  if (t === 3) return 'done';
+  if (t === 0) return 'pending';
+  return 'progress';
+}
+function wpCell(v) {
+  const t = (v || '').trim();
+  if (!t) return `<span style="color:#cbd5e1">—</span>`;
+  if (/^true$/i.test(t))  return `<span class="pill" style="background:#dcfce7;color:#16a34a">✓</span>`;
+  if (/^false$/i.test(t)) return `<span class="pill" style="background:#f1f5f9;color:#94a3b8">✗</span>`;
+  return `<span class="pill" style="background:#fef3c7;color:#b45309;font-size:9px">${escapeHtml(t)}</span>`;
+}
+function wpStatusPill(key) {
+  const t = WP_STATUS_TABS.find(s => s.key === key) || WP_STATUS_TABS[2];
+  return `<span class="pill" style="background:${t.bg};color:${t.color}">${escapeHtml(t.label)}</span>`;
+}
+// Parse one tower tab CSV → [{tower, floor, flat, area, testing, plaster, pcc, remark}]
+function parseWaterproofTab(csv, towerLabel) {
+  const rows = _kwCsvRows(csv);
+  const out = [];
+  let started = false, floor = '', flat = '';
+  let iFloor = 0, iFlat = 1, iArea = 2, iT = -1, iP = -1, iC = -1, iRem = -1;
+  for (const r of rows) {
+    const cells = r.map(c => (c || '').trim());
+    const up = cells.map(c => c.toUpperCase());
+    if (!started) {
+      // Header row carries FLOOR + the stage columns.
+      if (up.includes('FLOOR') && up.some(u => u === 'TESTING')) {
+        iFloor = up.indexOf('FLOOR');
+        iFlat  = up.indexOf('FLAT');
+        iArea  = up.findIndex(u => /^AREAS?$/.test(u));
+        iT     = up.findIndex(u => u === 'TESTING');
+        iP     = up.findIndex(u => u === 'PLASTER');
+        iC     = up.findIndex(u => u === 'PCC');
+        iRem   = up.findIndex(u => u === 'REMARKS');
+        if (iArea < 0) iArea = 2;
+        started = true;
+      }
+      continue;
+    }
+    if (cells[iFloor]) floor = cells[iFloor];
+    if (cells[iFlat])  flat  = cells[iFlat];
+    const area = (cells[iArea] || '').trim();
+    if (!area) continue;   // skip filler / blank-area rows
+    out.push({
+      tower:   towerLabel,
+      floor, flat, area,
+      testing: cells[iT] || '',
+      plaster: cells[iP] || '',
+      pcc:     cells[iC] || '',
+      remark:  iRem >= 0 ? (cells[iRem] || '') : '',
+    });
+  }
+  return out;
+}
+function wpCard(group, key, label, num, active, palette, desc) {
+  const c = palette.c, bg = active ? palette.activeBg : '#fff';
+  const border = active ? c : '#e2e8f0', rb = palette.ring;
+  return `<button class="card${active?' active':''}" data-wpgroup="${group}" data-wpkey="${escapeHtml(key)}"
+    style="flex:0 0 auto;min-width:130px;border-color:${border};background:${bg};box-shadow:${active?'0 0 0 3px '+rb:'0 1px 4px rgba(0,0,0,0.05)'}">
+    <div class="card-num" style="color:${c};font-size:22px">${num}</div>
+    <div class="card-label" style="font-size:11px">${escapeHtml(label)}</div>
+    ${desc ? `<div class="card-desc" style="font-size:10px;color:#64748b">${desc}</div>` : ''}
+  </button>`;
+}
+// Unique flats in a set of area-rows (a flat = tower + floor + flat id).
+function wpFlatCount(rows) {
+  return new Set(rows.map(r => `${r.tower}|${r.floor}|${r.flat}`)).size;
+}
+function wpTowerPct(rows) {
+  if (!rows.length) return '—';
+  const done = rows.filter(r => r.status === 'done').length;
+  return `${rows.length} areas · ${Math.round(done / rows.length * 100)}% done`;
+}
+async function renderWaterproof(container, subnav, sub) {
+  container.innerHTML = `<div class="eyebrow">${sub.icon} ${escapeHtml(sub.label)} <span class="tag live">LIVE</span></div>${subnav}${liveBar('loading')}<div class="loading">⏳ Pulling Waterproofing records…</div>`;
+  container.querySelectorAll('.sub-btn').forEach(b => {
+    b.addEventListener('click', () => { activeWorkSub = b.dataset.key; renderWork(); });
+  });
+  try {
+    const tabs = SHEET_TABS[FILES.waterproof] || [];
+    const allRows = [];
+    for (const tab of tabs) {
+      const csv = await fetchSheetTabRaw(FILES.waterproof, tab.gid).catch(() => '');
+      if (!csv || !csv.trim()) continue;
+      parseWaterproofTab(csv, tab.name).forEach(row => { row.status = wpRowStatus(row); allRows.push(row); });
+    }
+    if (allRows.length === 0) {
+      container.innerHTML = `<div class="eyebrow">${sub.icon} ${escapeHtml(sub.label)}</div>${subnav}<div class="error"><strong>No rows parsed.</strong> Make sure the Waterproofing records sheet is shared "Anyone with the link → Viewer".</div>`;
+      container.querySelectorAll('.sub-btn').forEach(b => { b.addEventListener('click', () => { activeWorkSub = b.dataset.key; renderWork(); }); });
+      return;
+    }
+    const towerNames = tabs.map(t => t.name);
+    if (activeWpTower !== 'all' && !towerNames.includes(activeWpTower)) activeWpTower = 'all';
+    const towerRows = activeWpTower === 'all' ? allRows : allRows.filter(r => r.tower === activeWpTower);
+    // Aggregate area-rows into flats (units). A flat = tower + floor + flat id.
+    // Flat status: Done = every area done · Pending = every area pending · else In Progress.
+    const flatMap = new Map();
+    towerRows.forEach(r => { const k = `${r.tower}|${r.floor}|${r.flat}`; (flatMap.get(k) || flatMap.set(k, []).get(k)).push(r); });
+    const flats = [...flatMap.values()].map(areas => {
+      const status = areas.every(a => a.status === 'done') ? 'done'
+                   : areas.every(a => a.status === 'pending') ? 'pending' : 'progress';
+      return { areas, status };
+    });
+    const counts = { all: flats.length, done:0, progress:0, pending:0 };
+    flats.forEach(f => counts[f.status]++);
+    if (activeWpStatus !== 'all' && !WP_STATUS_TABS.some(s => s.key === activeWpStatus)) activeWpStatus = 'all';
+    const filtered = activeWpStatus === 'all'
+      ? towerRows
+      : flats.filter(f => f.status === activeWpStatus).flatMap(f => f.areas);
+    // ── Tower filter cards (primary) ──
+    const towerCards = `<div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:0 0 4px 2px">📍 Tower · flats</div><div class="cards" style="overflow-x:auto;flex-wrap:nowrap;padding-bottom:6px">
+      ${wpCard('tower','all','All Towers',wpFlatCount(allRows),activeWpTower==='all',{ c:'#1e3a5f', activeBg:'#e0e7ff', ring:'#c7d2fe' }, wpTowerPct(allRows))}
+      ${towerNames.map(t => { const tr = allRows.filter(r => r.tower === t); return tr.length ? wpCard('tower', t, t, wpFlatCount(tr), activeWpTower === t, { c:'#0e7490', activeBg:'#cffafe', ring:'#a5f3fc' }, wpTowerPct(tr)) : ''; }).join('')}
+    </div>`;
+    // ── Status cards (Done / In Progress / Pending) with progress bars ──
+    const statusCards = `<div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:10px 0 4px 2px">💧 Status · out of ${counts.all} units</div><div class="cards">
+      ${wpCard('status','all','All Units',counts.all,activeWpStatus==='all',{ c:'#1e3a5f', activeBg:'#e0e7ff', ring:'#c7d2fe' })}
+      ${WP_STATUS_TABS.map(t => { const pct = counts.all ? Math.round((counts[t.key]||0)/counts.all*100) : 0; const isA = activeWpStatus===t.key;
+        return `<button class="card${isA?' active':''}" data-wpgroup="status" data-wpkey="${t.key}"
+          style="cursor:pointer;border-color:${isA?t.color:'#e2e8f0'};background:${isA?t.bg:'#fff'};box-shadow:${isA?'0 0 0 3px '+t.border:'0 1px 4px rgba(0,0,0,0.05)'}">
+          <div class="card-icon">${t.icon}</div>
+          <div class="card-num" style="color:${t.color}">${counts[t.key]||0}</div>
+          <div class="card-label">${escapeHtml(t.label)}</div>
+          <div class="card-desc">${escapeHtml(t.desc)}</div>
+          <div class="bar-row" style="margin-top:8px"><div class="bar-outer"><div class="bar-inner" style="width:${pct}%;background:${t.color}"></div></div><span class="bar-pct" style="color:${t.color}">${pct}%</span></div>
+        </button>`; }).join('')}
+    </div>`;
+    const tableHtml = filtered.length === 0
+      ? `<div class="empty">No areas match these filters.</div>`
+      : `<table style="min-width:880px"><thead><tr>
+          <th>#</th><th>Tower</th><th>Floor</th><th>Flat</th><th>Area</th>
+          <th style="text-align:center" title="TESTING">Testing</th>
+          <th style="text-align:center" title="PLASTER">Plaster</th>
+          <th style="text-align:center" title="PCC">PCC</th>
+          <th style="text-align:center">Status</th>
+          <th>Remarks</th>
+        </tr></thead><tbody>${filtered.map((r,i) => `<tr>
+          <td>${i+1}</td>
+          <td style="font-size:11px;font-weight:700;color:#0e7490">${escapeHtml(r.tower)}</td>
+          <td style="font-size:11px">${escapeHtml(r.floor)}</td>
+          <td style="font-family:monospace;font-weight:700;color:#1e3a5f">${escapeHtml(r.flat)}</td>
+          <td style="font-size:11px">${escapeHtml(r.area)}</td>
+          <td style="text-align:center">${wpCell(r.testing)}</td>
+          <td style="text-align:center">${wpCell(r.plaster)}</td>
+          <td style="text-align:center">${wpCell(r.pcc)}</td>
+          <td style="text-align:center">${wpStatusPill(r.status)}</td>
+          <td style="font-size:11px;color:#64748b">${escapeHtml(r.remark||'')}</td>
+        </tr>`).join('')}</tbody></table>`;
+    const scopeParts = [];
+    if (activeWpTower !== 'all')  scopeParts.push(activeWpTower);
+    if (activeWpStatus !== 'all') scopeParts.push((WP_STATUS_TABS.find(s=>s.key===activeWpStatus)||{}).label);
+    const scopeLabel = scopeParts.length === 0 ? 'All towers · all areas' : scopeParts.join(' · ');
+    container.innerHTML = `
+      <div class="eyebrow">${sub.icon} ${escapeHtml(sub.label)} <span class="tag live">LIVE</span></div>
+      ${subnav}
+      ${liveBar('live', allRows.length, 'Waterproofing records')}
+      ${towerCards}
+      ${statusCards}
+      <div style="font-size:11px;color:#64748b;margin:8px 0">Showing: <strong>${escapeHtml(scopeLabel)}</strong> · reporting on Testing · Plaster · PCC</div>
+      <div class="tbl-wrap" style="margin-top:8px">
+        <div class="tbl-head" style="background:#eff6ff;border-bottom:1px solid #bfdbfe">
+          <span>💧</span>
+          <span class="tbl-title" style="color:#1e3a5f">Waterproofing — ${escapeHtml(scopeLabel)}</span>
+          <span class="tbl-count" style="background:#1e3a5f">${filtered.length} areas</span>
+        </div>
+        <div style="overflow-x:auto">${tableHtml}</div>
+      </div>
+      <div style="font-size:11px;color:#94a3b8;text-align:center;margin-top:8px">
+        Source: <a href="https://docs.google.com/spreadsheets/d/${escapeHtml(FILES.waterproof)}/edit" target="_blank" style="color:#1d4ed8;text-decoration:none">Waterproofing records</a>
+        · Use the Reload button at the top to refresh.
+      </div>`;
+    container.querySelectorAll('.sub-btn').forEach(b => {
+      b.addEventListener('click', () => { activeWorkSub = b.dataset.key; activeWpTower = 'all'; activeWpStatus = 'all'; renderWork(); });
+    });
+    container.querySelectorAll('[data-wpgroup]').forEach(b => {
+      b.addEventListener('click', () => {
+        const g = b.dataset.wpgroup, k = b.dataset.wpkey;
+        if (g === 'tower')       { activeWpTower = k; activeWpStatus = 'all'; }
+        else if (g === 'status')   activeWpStatus = k;
+        renderWork();
+      });
+    });
+  } catch (e) {
+    container.innerHTML = `<div class="eyebrow">${sub.icon} ${escapeHtml(sub.label)}</div>${subnav}<div class="error"><strong>Failed to load:</strong> ${escapeHtml(e?.message || String(e))}</div>`;
+    container.querySelectorAll('.sub-btn').forEach(b => { b.addEventListener('click', () => { activeWorkSub = b.dataset.key; renderWork(); }); });
+  }
+}
+
 async function renderCommonAreas(container, subnav, sub) {
   container.innerHTML = `<div class="eyebrow">${sub.icon} ${escapeHtml(sub.label)} <span class="tag live">LIVE</span></div>${subnav}${liveBar('loading')}<div class="loading">⏳ Pulling from Drive…</div>`;
   container.querySelectorAll('.sub-btn').forEach(b => {
