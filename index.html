@@ -6047,6 +6047,13 @@ function vanityFlatExcluded(row) {
   }
   return false;
 }
+// A flat that is entirely NA (or blank) across every report column has no real
+// vanity data — it is excluded from ALL vanity counts (tower cards, funnel, table).
+function vanityAllNA(row) {
+  const vals = Object.values(row.cells);
+  if (!vals.length) return true;
+  return vals.every(v => { const u = String(v || '').trim().toUpperCase(); return u === 'NA' || u === 'N/A' || u === ''; });
+}
 // Whether a flat's toilet cell counts as a real toilet for the totals.
 // Counts blank / FALSE / TRUE / partial-hold-text (a real toilet, just not done);
 // excludes NA and "Not Delivered" cells (that vanity isn't on site for this flat),
@@ -6128,12 +6135,14 @@ async function renderVanityInto(host) {
   host.innerHTML = `${liveBar('loading')}<div class="loading">⏳ Pulling Vanity sheet…</div>`;
   try {
     const vanTabs = SHEET_TABS[FILES.vanity] || [];
-    const allRows = [];
+    const _vanParsed = [];
     for (const tab of vanTabs) {
       const csv = await fetchSheetTabRaw(FILES.vanity, tab.gid).catch(() => '');
       if (!csv || !csv.trim()) continue;
-      allRows.push(...parseVanity(csv, tab.name));
+      _vanParsed.push(...parseVanity(csv, tab.name));
     }
+    // Exclude flats that are entirely NA from all counts (cards, funnel) and the table.
+    const allRows = _vanParsed.filter(r => !vanityAllNA(r));
     if (allRows.length === 0) {
       host.innerHTML = `<div class="error"><strong>No rows parsed.</strong> Make sure the Vanity sheet is shared "Anyone with the link → Viewer". (It is currently pulled only via the private Drive connector.)</div>`;
       return;
