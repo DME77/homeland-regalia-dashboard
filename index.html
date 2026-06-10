@@ -3074,9 +3074,11 @@ function parseDrawings(md) {
     // Classify: Status column first, then fall back to the Remarks text.
     const blob = (statusRaw + ' ' + remarks).toLowerCase();
     let cls;
-    if (/\b(done|completed|complete|approved|issued)\b/.test(blob)
-        && !/\bnot\b|pending|awaited|under\s*(review|working|discussion)|tbd|to be|required|cancel|hold/.test(blob)) cls = 'done';
-    else if (/hold|cancel/.test(blob)) cls = 'delay';
+    // Cancelled points are treated as closed → counted under Done.
+    if (/cancel/.test(blob)) cls = 'done';
+    else if (/\b(done|completed|complete|approved|issued)\b/.test(blob)
+        && !/\bnot\b|pending|awaited|under\s*(review|working|discussion)|tbd|to be|required|hold/.test(blob)) cls = 'done';
+    else if (/hold/.test(blob)) cls = 'delay';
     else cls = 'pending';
     const remarkParts = [];
     if (dep2)        remarkParts.push(`Dep-2: ${dep2}`);
@@ -6819,11 +6821,12 @@ async function renderDrawings() {
        </div>`;
     const tableHtml = filtered.length === 0
       ? `<div class="empty">No items in this status.</div>`
-      : `<table><thead><tr><th>#</th><th>Drawing</th><th>Dependency 1</th><th style="text-align:center">Status</th><th>Remarks</th></tr></thead><tbody>${
+      : `<table><thead><tr><th>#</th><th>Drawing</th><th>Dependency 1</th><th style="text-align:center">Timeline</th><th style="text-align:center">Status</th><th>Remarks</th></tr></thead><tbody>${
         filtered.map((r,i) => `<tr>
           <td>${i+1}</td>
           <td class="loc">${escapeHtml(r.label)}</td>
           <td style="font-weight:600;color:#1e3a5f">${escapeHtml(r.dep1||'—')}</td>
+          <td style="text-align:center">${r.timeline ? `<span class="pill" style="background:#dbeafe;color:#1d4ed8;font-size:10px">${escapeHtml(r.timeline)}</span>` : '<span style="color:#cbd5e1">—</span>'}</td>
           <td style="text-align:center"><span class="pill" style="${pillStyles[r.status]}">${escapeHtml(r.statusText || pillText[r.status])}</span></td>
           <td style="color:${r.remark?'#6b7280':'#d1d5db'};font-style:${r.remark?'normal':'italic'}">${escapeHtml(r.remark||'—')}</td>
         </tr>`).join('')}</tbody></table>`;
