@@ -408,6 +408,13 @@ const STATUS_TABS = [
   { key:'delay', label:'Delayed',      icon:'🔴', color:'#dc2626', bg:'#fef2f2', border:'#fca5a5', desc:'Past due / blocked' },
   { key:'pending', label:'Pending',    icon:'🕐', color:'#b45309', bg:'#fffbeb', border:'#fcd34d', desc:'Not started' },
 ];
+// Drawings tab adds an "Under Review" bucket — drawings submitted and being reviewed.
+const DRAWINGS_STATUS_TABS = [
+  { key:'done',    label:'Done',         icon:'✅', color:'#16a34a', bg:'#f0fdf4', border:'#86efac', desc:'Completed / issued' },
+  { key:'delay',   label:'Delayed',      icon:'🔴', color:'#dc2626', bg:'#fef2f2', border:'#fca5a5', desc:'Past-due target / on hold' },
+  { key:'review',  label:'Under Review', icon:'🔍', color:'#2563eb', bg:'#eff6ff', border:'#93c5fd', desc:'Submitted, under review' },
+  { key:'pending', label:'Pending',      icon:'🕐', color:'#b45309', bg:'#fffbeb', border:'#fcd34d', desc:'Awaited / not started' },
+];
 // Interior Execution adds an "On Schedule" bucket — rows with a live (today/future) date.
 const INTERIOR_STATUS_TABS = [
   { key:'done',        label:'Done',        icon:'✅', color:'#16a34a', bg:'#f0fdf4', border:'#86efac', desc:'Completed' },
@@ -3037,6 +3044,24 @@ function parseLandscapeCivil(md, contractorTag, defaultTower) {
 // DWG "Final list" tab: | (idx) | Sr.no. | Required Drawings | Submitted by |
 // Dependency 1 | Dependency 2 | Timeline | Status | Remarks | Updated by | Issue date
 // Columns are located by header name so layout shifts don't break it.
+// True when a drawing's target (Timeline) date is in the past — supports both
+// dd/mm/yyyy (e.g. 06/06/2026) and day-month (e.g. 5-Jun) formats.
+function _drawingOverdue(v) {
+  const t = (v || '').trim();
+  if (!t) return false;
+  let dt = null;
+  let m = t.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{2,4})$/);
+  if (m) { let y = +m[3]; if (y < 100) y += 2000; dt = new Date(y, +m[2] - 1, +m[1]); }
+  else {
+    const MO = { jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11 };
+    const mm = t.match(/^(\d{1,2})[-\s]([a-zA-Z]{3,})/);
+    if (mm) { const mo = MO[mm[2].slice(0,3).toLowerCase()]; if (mo === undefined) return false; dt = new Date(new Date().getFullYear(), mo, +mm[1]); }
+  }
+  if (!dt || isNaN(dt)) return false;
+  dt.setHours(0,0,0,0);
+  const today = new Date(); today.setHours(0,0,0,0);
+  return dt < today;
+}
 function parseDrawings(md) {
   const lines = splitTableRows(md);
   const items = [];
@@ -3081,16 +3106,20 @@ function parseDrawings(md) {
     if (/cancel/.test(st))                                                    cls = 'done';
     else if (/\b(done|completed|complete|approved|issued)\b/.test(st) || isDate(statusRaw)) cls = 'done';
     else if (/hold/.test(st))                                                 cls = 'delay';
-    else if (/under\s*(review|working|discussion)|pending|awaited|tbd|to\s*be|required|\bnot\b/.test(st)) cls = 'pending';
+    else if (/under\s*review/.test(st))                                       cls = 'review';
+    else if (/pending|awaited|tbd|to\s*be|required|\bnot\b|under\s*(working|discussion)/.test(st)) cls = 'pending';
     else {
       // Status cell blank/unclear → use the Remarks text as before.
       const blob = (statusRaw + ' ' + remarks).toLowerCase();
       if (/cancel/.test(blob)) cls = 'done';
       else if (/\b(done|completed|complete|approved|issued)\b/.test(blob)
           && !/\bnot\b|pending|awaited|under\s*(review|working|discussion)|tbd|to be|required|hold/.test(blob)) cls = 'done';
+      else if (/under\s*review/.test(blob)) cls = 'review';
       else if (/hold/.test(blob)) cls = 'delay';
       else cls = 'pending';
     }
+    // A still-open (pending) drawing whose target Timeline date is in the past → Delayed.
+    if (cls === 'pending' && _drawingOverdue(timeline)) cls = 'delay';
     const remarkParts = [];
     if (dep2)        remarkParts.push(`Dep-2: ${dep2}`);
     if (submittedBy) remarkParts.push(`By: ${submittedBy}`);
@@ -6821,12 +6850,13 @@ async function renderDrawings() {
         breadcrumb += ` · ${escapeHtml(activeDrawingsDependency)}`;
       }
     }
-    const counts = { done:0, delay:0, pending:0 };
+    const counts = { done:0, delay:0, review:0, pending:0 };
     items.forEach(it => counts[it.status]++);
-    const tab = STATUS_TABS.find(t => t.key === activeDrawingsStatus);
+    if (!DRAWINGS_STATUS_TABS.some(t => t.key === activeDrawingsStatus)) activeDrawingsStatus = 'pending';
+    const tab = DRAWINGS_STATUS_TABS.find(t => t.key === activeDrawingsStatus);
     const filtered = items.filter(it => it.status === activeDrawingsStatus);
-    const pillStyles = { done:'background:#dcfce7;color:#16a34a', delay:'background:#fee2e2;color:#dc2626', pending:'background:#fef3c7;color:#b45309' };
-    const pillText = { done:'Done', delay:'Delayed', pending:'Pending' };
+    const pillStyles = { done:'background:#dcfce7;color:#16a34a', delay:'background:#fee2e2;color:#dc2626', review:'background:#dbeafe;color:#2563eb', pending:'background:#fef3c7;color:#b45309' };
+    const pillText = { done:'Done', delay:'Delayed', review:'Under Review', pending:'Pending' };
     // ── Timeline summary — group the in-scope drawings by their Timeline date ──
     const tlGroups = {};
     items.forEach(r => { const t = (r.timeline || '').trim(); if (t) (tlGroups[t] = tlGroups[t] || []).push(r); });
@@ -6854,7 +6884,7 @@ async function renderDrawings() {
       <div class="eyebrow">📐 Drawing Status${breadcrumb} <span class="tag live">LIVE</span></div>
       ${liveBar('live', allItems.length, 'DWG Final list')}
       ${dependencyNav}
-      ${statusCardsHtml(STATUS_TABS, counts, activeDrawingsStatus)}
+      ${statusCardsHtml(DRAWINGS_STATUS_TABS, counts, activeDrawingsStatus)}
       <div class="tbl-wrap" style="border-color:${tab.border}">
         <div class="tbl-head" style="background:${tab.bg};border-bottom:1px solid ${tab.border}">
           <span>${tab.icon}</span>
@@ -7724,7 +7754,7 @@ async function runHealthCheck() {
 // fresh URL opens — those always land on the default tab (Labour Report).
 const VALID_TABS      = ['work','drawings','tendering','labour','purchasable','elevators'];
 const VALID_WORK_SUBS = WORK_SUBS.map(s => s.key);
-const VALID_STATUS    = ['done','delay','pending'];
+const VALID_STATUS    = ['done','delay','pending','review','on-schedule'];
 const _ws  = sessionStorage.getItem('activeWorkSub');
 if (_ws  && VALID_WORK_SUBS.includes(_ws))  activeWorkSub      = _ws;
 const _wi  = sessionStorage.getItem('activeWorkItem');
