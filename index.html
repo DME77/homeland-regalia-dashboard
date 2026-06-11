@@ -3071,15 +3071,26 @@ function parseDrawings(md) {
     if (/priority\s*\d/i.test(c.join(' '))) continue;   // skip the colour-legend rows
     const dep1 = get('dep1'), dep2 = get('dep2'), timeline = get('timeline');
     const statusRaw = get('status'), remarks = get('remarks'), submittedBy = get('submitted');
-    // Classify: Status column first, then fall back to the Remarks text.
-    const blob = (statusRaw + ' ' + remarks).toLowerCase();
+    // Classify on the STATUS column authoritatively — the Status cell is the source of
+    // truth. A status of Done/Complete/Approved/Issued (or a date = completion date) is
+    // Done even if the Remarks mention "pending / required / under review". Cancelled →
+    // closed (Done). Only when the Status cell is blank/ambiguous do we fall back to Remarks.
+    const st = statusRaw.toLowerCase().trim();
+    const isDate = v => /\d{1,2}[\/-]\d{1,2}[\/-]\d{2,4}/.test(v) || /^\d{1,2}[-\s][a-z]{3,}/i.test(v);
     let cls;
-    // Cancelled points are treated as closed → counted under Done.
-    if (/cancel/.test(blob)) cls = 'done';
-    else if (/\b(done|completed|complete|approved|issued)\b/.test(blob)
-        && !/\bnot\b|pending|awaited|under\s*(review|working|discussion)|tbd|to be|required|hold/.test(blob)) cls = 'done';
-    else if (/hold/.test(blob)) cls = 'delay';
-    else cls = 'pending';
+    if (/cancel/.test(st))                                                    cls = 'done';
+    else if (/\b(done|completed|complete|approved|issued)\b/.test(st) || isDate(statusRaw)) cls = 'done';
+    else if (/hold/.test(st))                                                 cls = 'delay';
+    else if (/under\s*(review|working|discussion)|pending|awaited|tbd|to\s*be|required|\bnot\b/.test(st)) cls = 'pending';
+    else {
+      // Status cell blank/unclear → use the Remarks text as before.
+      const blob = (statusRaw + ' ' + remarks).toLowerCase();
+      if (/cancel/.test(blob)) cls = 'done';
+      else if (/\b(done|completed|complete|approved|issued)\b/.test(blob)
+          && !/\bnot\b|pending|awaited|under\s*(review|working|discussion)|tbd|to be|required|hold/.test(blob)) cls = 'done';
+      else if (/hold/.test(blob)) cls = 'delay';
+      else cls = 'pending';
+    }
     const remarkParts = [];
     if (dep2)        remarkParts.push(`Dep-2: ${dep2}`);
     if (submittedBy) remarkParts.push(`By: ${submittedBy}`);
