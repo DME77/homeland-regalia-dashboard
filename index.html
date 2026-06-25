@@ -329,6 +329,7 @@ const FILES = {
   electricalPrajapati: '1ENy7ys-ryw6WkN8k0CLFIrbd5G30nQlhtdewUfCgZpI',
   electricalUnique: '18sOp7TYcCZDzS58XTM_rtjWhyHN1BlPpcuvrWpSu_yc',
   electricalBijli: '1l5AJTTzCuO1pv1bQmrFcKqasCdwMcqTNwBo7yYcWKBE',
+  electricalVD: '1JzvRVplQmsbMbC9jyysz_yfGDoubwHtmSz5u3lJMYQE',
   mepLabour:      '1dBfjaVVyud5AXhFK3a771p67134FQkOHIaRFGNeioJg',
   planner:        '1EsUx8Ez8-gjfLT5nf8MiOMqYlBubMRWnTl9dgi-7_R4',
   // Index of daily labour reports: columns → Date | Interior File ID | Facade File ID | MEP File ID
@@ -604,6 +605,10 @@ const SHEET_TABS = {
   // Electrical · Bijli Wala — flat-level "dates" tab (Tower 1)
   '1l5AJTTzCuO1pv1bQmrFcKqasCdwMcqTNwBo7yYcWKBE': [
     { gid: 1546208541, name: 'Tower 1' },
+  ],
+  // Electrical · VD Associates — flat-level "dates" tab (Tower 3)
+  '1JzvRVplQmsbMbC9jyysz_yfGDoubwHtmSz5u3lJMYQE': [
+    { gid: 1130762286, name: 'Tower 3' },
   ],
   // Sample Flats — one tab per sample flat (Execution)
   '1rLsyzas_xBXI6jr3SyeZrY-W2NfYvsQHF6Cwt4tVdEc': [
@@ -5361,7 +5366,16 @@ const ELEC_CONTRACTORS = [
   { key:'prajapati',    label:'Prajapati',          scope:'T3',    fileId:FILES.electricalPrajapati },
   { key:'unique',       label:'Unique Electricals', scope:'T2',    fileId:FILES.electricalUnique },
   { key:'bijli',        label:'Bijli Wala',         scope:'T1',    fileId:FILES.electricalBijli },
+  { key:'vd',           label:'VD Associates',      scope:'T3',    fileId:FILES.electricalVD },
 ];
+// Lift-lobby tabs per contractor workbook (per-floor records, not per-flat).
+const ELEC_LOBBY_TABS = {
+  [FILES.electrical]:          [ { gid:1615758842, name:'Tower 4' }, { gid:1560418078, name:'Tower 5' }, { gid:1270256928, name:'Tower 6' } ],
+  [FILES.electricalPrajapati]: [ { gid:160496720,  name:'Tower 3' } ],
+  [FILES.electricalUnique]:    [ { gid:847778844,  name:'Tower 2' } ],
+  [FILES.electricalBijli]:     [ { gid:1733329826, name:'Tower 1' } ],
+  [FILES.electricalVD]:        [ { gid:1092395407, name:'Tower 3' } ],
+};
 function _elecCell(v) {
   const u = String(v || '').trim().toUpperCase();
   if (u === 'TRUE') return 'done';
@@ -5375,7 +5389,7 @@ const ELEC_MILESTONES = [
   { label:'Wall Conduiting',                          short:'Wall Cond.',  re:/wall\s*conduit/i },
   { label:'Internal Electrical Point & Circuit Wiring', short:'Pt & Wiring', re:/internal\s*electrical|circuit\s*wiring/i },
   { label:'Testing',                                  short:'Testing',     re:/^testing/i },
-  { label:'Lights fixtures fixing',                   short:'Lights',      re:/lights?\s*fixtures?\s*fixing/i },
+  { label:'Lights fixtures fixing',                   short:'Lights',      re:/lights?\s*(fixtur|install)/i },
   { label:'DB dressing',                              short:'DB',          re:/db\s*dressing/i },
 ];
 function parseElectricalTab(csv, tower) {
@@ -5410,6 +5424,101 @@ function parseElectricalTab(csv, tower) {
   }
   return flats;
 }
+// Lift-lobby tab parser — rows are floors (1st…22nd) across all stage columns after "Floor".
+function parseElecLobbyTab(csv, tower) {
+  const lines = csvToPipeRows(csv).split('\n').map(parseRow).filter(r => r && r.length);
+  let hi = -1, floorCol = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const lc = lines[i].map(x => (x || '').toLowerCase().trim());
+    const fi = lc.findIndex(x => x === 'floor');
+    if (fi >= 0 && lc.some(x => /ceiling|wiring|pipe|wall|testing|fixture/.test(x))) { hi = i; floorCol = fi; break; }
+  }
+  if (hi < 0) return [];
+  const header = lines[hi];
+  const stageCols = [];
+  for (let k = floorCol + 1; k < header.length; k++) { if ((header[k] || '').trim()) stageCols.push(k); }
+  const rows = [];
+  for (let i = hi + 1; i < lines.length; i++) {
+    const c = lines[i];
+    const floor = (c[floorCol] || '').trim();
+    if (!floor || /^floor$/i.test(floor) || !/\d/.test(floor)) continue;
+    let done = 0, applic = 0, problem = false, started = false, note = '', noteStage = '';
+    for (const k of stageCols) {
+      const cell = c[k] || ''; const cl = _elecCell(cell);
+      if (cl === 'na') continue;
+      applic++;
+      if (cl === 'done') done++;
+      else if (cl === 'problem') { problem = true; if (!note) { note = cell.trim(); noteStage = (header[k] || '').trim(); } }
+      else if (cl === 'note') { if (/wip|mockup|progress/i.test(cell)) started = true; if (!note) { note = cell.trim(); noteStage = (header[k] || '').trim(); } }
+    }
+    if (done > 0) started = true;
+    const status = (applic > 0 && done === applic) ? 'done' : (problem ? 'delay' : (started ? 'progress' : 'pending'));
+    rows.push({ tower, floor, done, total: applic, pct: applic ? Math.round(done / applic * 100) : 0, status, note, noteStage });
+  }
+  return rows;
+}
+async function renderElecLobbies(container, subnav, sub, catFilter, wireNav) {
+  const con = ELEC_CONTRACTORS.find(c => c.key === activeElecContractor) || ELEC_CONTRACTORS[0];
+  const conFilter = `<div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:0 0 5px 2px">🔌 Contractor</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">${ELEC_CONTRACTORS.map(c => { const isA = c.key === activeElecContractor;
+      return `<button data-eleccontractor="${c.key}" style="cursor:pointer;padding:7px 16px;border-radius:8px;font-size:12px;font-weight:700;border:1.5px solid ${isA?'#1e3a5f':'#e2e8f0'};background:${isA?'#1e3a5f':'#fff'};color:${isA?'#fff':'#475569'}">${escapeHtml(c.label)} <span style="font-weight:500;opacity:0.7;font-size:10px">${escapeHtml(c.scope)}</span></button>`; }).join('')}</div>`;
+  container.innerHTML = `<div class="eyebrow">${sub.icon} ${escapeHtml(sub.label)} <span class="tag live">LIVE</span> <span style="color:#94a3b8;font-size:11px;margin-left:6px">Lift Lobbies · ${escapeHtml(con.label)}</span></div>${subnav}${catFilter}${conFilter}${liveBar('loading')}<div class="loading">⏳ Pulling lift-lobby records…</div>`;
+  wireNav();
+  container.querySelectorAll('[data-eleccontractor]').forEach(b => { b.addEventListener('click', () => { activeElecContractor = b.dataset.eleccontractor; activeElecTower = 'all'; activeElecStatus = 'all'; renderWork(); }); });
+  try {
+    const tabs = ELEC_LOBBY_TABS[con.fileId] || [];
+    const all = [];
+    for (const tab of tabs) {
+      const csv = await fetchSheetTabRaw(con.fileId, tab.gid).catch(() => '');
+      if (!csv || !csv.trim()) continue;
+      parseElecLobbyTab(csv, tab.name).forEach(r => all.push(r));
+    }
+    const reWire = () => {
+      wireNav();
+      container.querySelectorAll('[data-eleccontractor]').forEach(b => { b.addEventListener('click', () => { activeElecContractor = b.dataset.eleccontractor; activeElecTower = 'all'; activeElecStatus = 'all'; renderWork(); }); });
+      container.querySelectorAll('[data-electower]').forEach(b => { b.addEventListener('click', () => { activeElecTower = (activeElecTower === b.dataset.electower) ? 'all' : b.dataset.electower; activeElecStatus = 'all'; renderWork(); }); });
+      container.querySelectorAll('[data-elecstatus]').forEach(b => { b.addEventListener('click', () => { activeElecStatus = (activeElecStatus === b.dataset.elecstatus) ? 'all' : b.dataset.elecstatus; renderWork(); }); });
+    };
+    if (all.length === 0) {
+      container.innerHTML = `<div class="eyebrow">${sub.icon} ${escapeHtml(sub.label)}</div>${subnav}${catFilter}${conFilter}<div class="error"><strong>No lobby rows parsed for ${escapeHtml(con.label)}.</strong> Make sure the sheet is shared "Anyone with the link → Viewer".</div>`;
+      reWire(); return;
+    }
+    const towerNames = tabs.map(t => t.name);
+    if (activeElecTower !== 'all' && !towerNames.includes(activeElecTower)) activeElecTower = 'all';
+    const scope = activeElecTower === 'all' ? all : all.filter(r => r.tower === activeElecTower);
+    const counts = { all: scope.length, done:0, progress:0, delay:0, pending:0 };
+    scope.forEach(r => counts[r.status]++);
+    if (activeElecStatus !== 'all' && !ELEC_STATUS_TABS.some(s => s.key === activeElecStatus)) activeElecStatus = 'all';
+    const filtered = activeElecStatus === 'all' ? scope : scope.filter(r => r.status === activeElecStatus);
+    const towerPct = rows => rows.length ? Math.round(rows.filter(r => r.status === 'done').length / rows.length * 100) : 0;
+    const towerCards = `<div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:0 0 4px 2px">📍 Tower · floors</div><div class="cards" style="overflow-x:auto;flex-wrap:nowrap;padding-bottom:6px">
+      ${towerNames.map(t => { const tr = all.filter(r => r.tower === t); if (!tr.length) return ''; const isA = activeElecTower === t;
+        return `<button class="card${isA?' active':''}" data-electower="${escapeHtml(t)}" style="cursor:pointer;${isA?'border-color:#0e7490;background:#cffafe;box-shadow:0 0 0 3px #a5f3fc':''}"><div class="card-num" style="color:#0e7490">${tr.length}</div><div class="card-label">${escapeHtml(t)}</div><div class="card-desc">${towerPct(tr)}% done</div></button>`; }).join('')}
+    </div>`;
+    const statusCards = `<div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:10px 0 4px 2px">⚡ Status · out of ${counts.all} floors</div><div class="cards">
+      ${ELEC_STATUS_TABS.map(t => { const pct = counts.all ? Math.round((counts[t.key]||0)/counts.all*100) : 0; const isA = activeElecStatus===t.key;
+        return `<button class="card${isA?' active':''}" data-elecstatus="${t.key}" style="cursor:pointer;border-color:${isA?t.color:'#e2e8f0'};background:${isA?t.bg:'#fff'};box-shadow:${isA?'0 0 0 3px '+t.border:'0 1px 4px rgba(0,0,0,0.05)'}"><div class="card-icon">${t.icon}</div><div class="card-num" style="color:${t.color}">${counts[t.key]||0}</div><div class="card-label">${escapeHtml(t.label)}</div><div class="card-desc">${escapeHtml(t.desc)}</div><div class="bar-row" style="margin-top:8px"><div class="bar-outer"><div class="bar-inner" style="width:${pct}%;background:${t.color}"></div></div><span class="bar-pct" style="color:${t.color}">${pct}%</span></div></button>`; }).join('')}
+    </div>`;
+    const pill = { done:['#16a34a','#f0fdf4','✓ Done'], progress:['#2563eb','#eff6ff','⏳ In progress'], delay:['#dc2626','#fef2f2','⚠ Attention'], pending:['#64748b','#f1f5f9','• Pending'] };
+    const tableHtml = filtered.length === 0 ? `<div class="empty">No floors match these filters.</div>`
+      : `<table style="min-width:560px"><thead><tr><th>#</th><th>Tower</th><th>Floor</th><th>Stages done</th><th style="text-align:center">Status</th><th>Note</th></tr></thead><tbody>${filtered.map((r,i) => `<tr>
+          <td>${i+1}</td>
+          <td style="font-size:11px;font-weight:700;color:#0e7490">${escapeHtml(r.tower)}</td>
+          <td style="font-weight:700;color:#1e3a5f">${escapeHtml(r.floor)}</td>
+          <td><div class="bar-row"><div class="bar-outer" style="width:110px"><div class="bar-inner" style="width:${r.pct}%;background:${pill[r.status][0]}"></div></div><span style="font-size:11px;color:#475569">${r.done}/${r.total}</span></div></td>
+          <td style="text-align:center"><span class="pill" style="color:${pill[r.status][0]};background:${pill[r.status][1]}">${pill[r.status][2]}</span></td>
+          <td style="color:${r.note?'#b45309':'#d1d5db'};font-style:${r.note?'normal':'italic'};font-size:11px">${r.note?escapeHtml((r.noteStage?r.noteStage+': ':'')+r.note):'—'}</td>
+        </tr>`).join('')}</tbody></table>`;
+    const showData = activeElecTower !== 'all';
+    const tableBlock = `<div class="tbl-wrap" style="border-color:#e2e8f0"><div class="tbl-head" style="background:#f8fafc;border-bottom:1px solid #e2e8f0"><span>🛗</span><span class="tbl-title" style="color:#1e3a5f">${escapeHtml(con.label)} lobbies — ${escapeHtml(activeElecTower)}</span><span class="tbl-count" style="background:#1e3a5f">${filtered.length} floors</span></div>${tableHtml}</div>`;
+    container.innerHTML = `<div class="eyebrow">${sub.icon} ${escapeHtml(sub.label)} <span class="tag live">LIVE</span> <span style="color:#94a3b8;font-size:11px;margin-left:6px">Lift Lobbies · ${escapeHtml(con.label)}</span></div>${subnav}${catFilter}${conFilter}${towerCards}${showData ? statusCards + tableBlock : '<div class="empty" style="margin-top:10px">Select a tower above to view its lobby floors.</div>'}`;
+    reWire();
+  } catch (e) {
+    container.innerHTML = `<div class="eyebrow">${sub.icon} ${escapeHtml(sub.label)}</div>${subnav}${catFilter}${conFilter}<div class="error"><strong>Couldn't load lobbies.</strong> ${escapeHtml(e.message || String(e))}</div>`;
+    wireNav();
+    container.querySelectorAll('[data-eleccontractor]').forEach(b => { b.addEventListener('click', () => { activeElecContractor = b.dataset.eleccontractor; activeElecTower = 'all'; activeElecStatus = 'all'; renderWork(); }); });
+  }
+}
 async function renderElectrical(container, subnav, sub) {
   if (!ELEC_CATEGORIES.some(c => c.key === activeElecCategory)) activeElecCategory = 'flats';
   const catFilter = `<div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:0 0 5px 2px">📂 Category</div>
@@ -5419,7 +5528,12 @@ async function renderElectrical(container, subnav, sub) {
     container.querySelectorAll('.sub-btn').forEach(b => { b.addEventListener('click', () => { activeWorkSub = b.dataset.key; renderWork(); }); });
     container.querySelectorAll('[data-eleccat]').forEach(b => { b.addEventListener('click', () => { activeElecCategory = b.dataset.eleccat; activeElecTower = 'all'; activeElecStatus = 'all'; renderWork(); }); });
   };
-  // Non-Flats categories: placeholder until their tab links/GIDs are shared
+  // Lift Lobbies — live (per-floor records per contractor)
+  if (activeElecCategory === 'lobbies') {
+    await renderElecLobbies(container, subnav, sub, catFilter, wireNav);
+    return;
+  }
+  // Other non-Flats categories: placeholder until their tab links/GIDs are shared
   if (activeElecCategory !== 'flats') {
     const cat = ELEC_CATEGORIES.find(c => c.key === activeElecCategory);
     container.innerHTML = `<div class="eyebrow">${sub.icon} ${escapeHtml(sub.label)}</div>${subnav}${catFilter}
