@@ -2876,6 +2876,8 @@ function parseInteriorExecution(md, contractorTag, defaultTower) {
     const floor = Math.floor(flat / 10);
     const contractor = inferContractor(tower, floor, flat);
     const states  = stageIdxs.map(k => (c[k]||'').trim());
+    // Exclude flats that have a "hold" in any stage cell — don't count them in the report.
+    if (states.some(s => /hold/i.test(s))) continue;
     const naCount = states.filter(s => /^NA$/i.test(s) || s === '').length;
     const trueCount = states.filter(s => s.toUpperCase() === 'TRUE').length;
     // Interior rule: ONLY cells with an actual past date mark a flat as Delayed.
