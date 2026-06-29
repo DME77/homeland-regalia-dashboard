@@ -471,6 +471,7 @@ let activeFapaSub        = 'flats';   // FAPA category: 'flats' | 'lobbies'
 let activeElecContractor = 'electrocraft'; // Electrical: which contractor sub-filter
 let activeElecTower    = 'all';       // Electrical: 'all' | a tower tab name
 let activeElecStatus   = 'all';       // Electrical: 'all' | done | progress | delay | pending
+let activeFireCategory   = 'tower';   // Fire: Tower | fhc | common
 let activeFireContractor = 'apex';    // Fire: which contractor sub-filter
 let activeFireTower    = 'all';       // Fire: 'all' | a tower tab name
 let activeFireStatus   = 'all';       // Fire: 'all' | done | progress | delay | pending
@@ -5652,6 +5653,13 @@ async function renderElecFapa(container, subnav, sub, catFilter, wireNav) {
   }
 }
 // ─── Fire (fire-fighting) — per-flat pipe work, contractor sub-filter ────────
+// Fire top-level categories. 'tower' is the live per-flat view; the rest are
+// placeholders until their data is shared.
+const FIRE_CATEGORIES = [
+  { key:'tower',  label:'Tower',       icon:'🏢' },
+  { key:'fhc',    label:'FHC',         icon:'🧯' },
+  { key:'common', label:'Common Area', icon:'🏛️' },
+];
 // Each contractor lists its tower tabs explicitly (a contractor may span multiple workbooks).
 const FIRE_CONTRACTORS = [
   { key:'apex', label:'APEX Fire', scope:'T3–T6', tabs:[
@@ -5671,17 +5679,34 @@ const FIRE_CONTRACTORS = [
   ]},
 ];
 async function renderFire(container, subnav, sub) {
+  if (!FIRE_CATEGORIES.some(c => c.key === activeFireCategory)) activeFireCategory = 'tower';
+  const catFilter = `<div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:0 0 5px 2px">📂 Category</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">${FIRE_CATEGORIES.map(c => { const isA = c.key === activeFireCategory;
+      return `<button data-firecat="${c.key}" style="cursor:pointer;padding:8px 18px;border-radius:9px;font-size:12.5px;font-weight:700;border:1.5px solid ${isA?'#b91c1c':'#e2e8f0'};background:${isA?'#b91c1c':'#fff'};color:${isA?'#fff':'#475569'}">${c.icon} ${escapeHtml(c.label)}</button>`; }).join('')}</div>`;
+  const wireCat = () => {
+    container.querySelectorAll('.sub-btn').forEach(b => { b.addEventListener('click', () => { activeWorkSub = b.dataset.key; renderWork(); }); });
+    container.querySelectorAll('[data-firecat]').forEach(b => { b.addEventListener('click', () => { activeFireCategory = b.dataset.firecat; activeFireTower = 'all'; activeFireStatus = 'all'; renderWork(); }); });
+  };
+  // Non-Tower categories: placeholder until their data is shared
+  if (activeFireCategory !== 'tower') {
+    const cat = FIRE_CATEGORIES.find(c => c.key === activeFireCategory);
+    container.innerHTML = `<div class="eyebrow">${sub.icon} ${escapeHtml(sub.label)}</div>${subnav}${catFilter}
+      <div class="tbl-wrap" style="border-color:#e2e8f0"><div class="tbl-head" style="background:#f8fafc;border-bottom:1px solid #e2e8f0"><span>${cat.icon}</span><span class="tbl-title" style="color:#1e3a5f">${escapeHtml(cat.label)}</span><span class="tag" style="background:#fef3c7;color:#b45309;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;margin-left:6px">COMING SOON</span></div>
+      <div class="empty" style="padding:30px;text-align:center;color:#64748b">${cat.icon} <strong>${escapeHtml(cat.label)}</strong> fire tracking isn't wired yet.<br><span style="font-size:12px">Share the ${escapeHtml(cat.label)} tab link &amp; GID and I'll connect it live.</span></div></div>`;
+    wireCat();
+    return;
+  }
   const con = FIRE_CONTRACTORS.find(c => c.key === activeFireContractor) || FIRE_CONTRACTORS[0];
   const conFilter = `<div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:0 0 5px 2px">🧯 Contractor</div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">${FIRE_CONTRACTORS.map(c => { const isA = c.key === activeFireContractor;
       return `<button data-firecon="${c.key}" style="cursor:pointer;padding:7px 16px;border-radius:8px;font-size:12px;font-weight:700;border:1.5px solid ${isA?'#b91c1c':'#e2e8f0'};background:${isA?'#b91c1c':'#fff'};color:${isA?'#fff':'#475569'}">${escapeHtml(c.label)} <span style="font-weight:500;opacity:0.7;font-size:10px">${escapeHtml(c.scope)}</span></button>`; }).join('')}</div>`;
   const wireF = () => {
-    container.querySelectorAll('.sub-btn').forEach(b => { b.addEventListener('click', () => { activeWorkSub = b.dataset.key; renderWork(); }); });
+    wireCat();
     container.querySelectorAll('[data-firecon]').forEach(b => { b.addEventListener('click', () => { activeFireContractor = b.dataset.firecon; activeFireTower = 'all'; activeFireStatus = 'all'; renderWork(); }); });
     container.querySelectorAll('[data-firetower]').forEach(b => { b.addEventListener('click', () => { activeFireTower = (activeFireTower === b.dataset.firetower) ? 'all' : b.dataset.firetower; activeFireStatus = 'all'; renderWork(); }); });
     container.querySelectorAll('[data-firestatus]').forEach(b => { b.addEventListener('click', () => { activeFireStatus = (activeFireStatus === b.dataset.firestatus) ? 'all' : b.dataset.firestatus; renderWork(); }); });
   };
-  container.innerHTML = `<div class="eyebrow">${sub.icon} ${escapeHtml(sub.label)} <span class="tag live">LIVE</span> <span style="color:#94a3b8;font-size:11px;margin-left:6px">${escapeHtml(con.label)} · ${escapeHtml(con.scope)}</span></div>${subnav}${conFilter}${liveBar('loading')}<div class="loading">⏳ Pulling fire-fighting records…</div>`;
+  container.innerHTML = `<div class="eyebrow">${sub.icon} ${escapeHtml(sub.label)} <span class="tag live">LIVE</span> <span style="color:#94a3b8;font-size:11px;margin-left:6px">${escapeHtml(con.label)} · ${escapeHtml(con.scope)}</span></div>${subnav}${catFilter}${conFilter}${liveBar('loading')}<div class="loading">⏳ Pulling fire-fighting records…</div>`;
   wireF();
   try {
     const tabs = con.tabs || [];
@@ -5692,7 +5717,7 @@ async function renderFire(container, subnav, sub) {
       parseFapaTab(csv, tab.name, 'area name').forEach(r => all.push(r));
     }
     if (all.length === 0) {
-      container.innerHTML = `<div class="eyebrow">${sub.icon} ${escapeHtml(sub.label)}</div>${subnav}${conFilter}<div class="error"><strong>No fire rows parsed.</strong> Make sure the sheet is shared "Anyone with the link → Viewer".</div>`;
+      container.innerHTML = `<div class="eyebrow">${sub.icon} ${escapeHtml(sub.label)}</div>${subnav}${catFilter}${conFilter}<div class="error"><strong>No fire rows parsed.</strong> Make sure the sheet is shared "Anyone with the link → Viewer".</div>`;
       wireF(); return;
     }
     const towerNames = tabs.map(t => t.name);
@@ -5723,10 +5748,10 @@ async function renderFire(container, subnav, sub) {
         </tr>`).join('')}</tbody></table>`;
     const showData = activeFireTower !== 'all';
     const tableBlock = `<div class="tbl-wrap" style="border-color:#e2e8f0"><div class="tbl-head" style="background:#f8fafc;border-bottom:1px solid #e2e8f0"><span>🔥</span><span class="tbl-title" style="color:#1e3a5f">${escapeHtml(con.label)} — ${escapeHtml(activeFireTower)}</span><span class="tbl-count" style="background:#b91c1c">${filtered.length} flats</span></div>${tableHtml}</div>`;
-    container.innerHTML = `<div class="eyebrow">${sub.icon} ${escapeHtml(sub.label)} <span class="tag live">LIVE</span> <span style="color:#94a3b8;font-size:11px;margin-left:6px">${escapeHtml(con.label)} · ${escapeHtml(con.scope)}</span></div>${subnav}${conFilter}${towerCards}${showData ? statusCards + tableBlock : '<div class="empty" style="margin-top:10px">Select a tower above to view its fire-fighting flats.</div>'}`;
+    container.innerHTML = `<div class="eyebrow">${sub.icon} ${escapeHtml(sub.label)} <span class="tag live">LIVE</span> <span style="color:#94a3b8;font-size:11px;margin-left:6px">${escapeHtml(con.label)} · ${escapeHtml(con.scope)}</span></div>${subnav}${catFilter}${conFilter}${towerCards}${showData ? statusCards + tableBlock : '<div class="empty" style="margin-top:10px">Select a tower above to view its fire-fighting flats.</div>'}`;
     wireF();
   } catch (e) {
-    container.innerHTML = `<div class="eyebrow">${sub.icon} ${escapeHtml(sub.label)}</div>${subnav}${conFilter}<div class="error"><strong>Couldn't load Fire.</strong> ${escapeHtml(e.message || String(e))}</div>`;
+    container.innerHTML = `<div class="eyebrow">${sub.icon} ${escapeHtml(sub.label)}</div>${subnav}${catFilter}${conFilter}<div class="error"><strong>Couldn't load Fire.</strong> ${escapeHtml(e.message || String(e))}</div>`;
     wireF();
   }
 }
