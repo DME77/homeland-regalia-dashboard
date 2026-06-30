@@ -6806,15 +6806,25 @@ function parseVanity(csv, towerName) {
   });
   const remarkIdx = header.findIndex(h => /remark/i.test(h));
   const flatRe = /^T0?\d\s*\/\s*\d{2,3}$/i;
+  // Some tower tabs (e.g. Tower-6) list flats as bare unit numbers ("11","12"…)
+  // instead of the "T06/11" form. Derive the tower prefix so those still parse.
+  const tnum = (towerName.match(/\d+/) || [''])[0].replace(/^0?/, '0').slice(-2);
+  const bareRe = /^\d{2,3}$/;
   const out = [];
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i];
-    const flat = (r[0] || '').trim();
-    if (!flatRe.test(flat)) continue;
+    let flat = (r[0] || '').trim();
+    if (flatRe.test(flat)) {
+      flat = flat.replace(/\s+/g, '');
+    } else if (bareRe.test(flat) && tnum) {
+      flat = `T${tnum}/${flat}`;          // e.g. Tower-06 unit "11" -> "T06/11"
+    } else {
+      continue;
+    }
     const cells = {};
     Object.entries(colIdx).forEach(([k, j]) => { cells[k] = (r[j] || '').trim(); });
     out.push({
-      flat:   flat.replace(/\s+/g, ''),
+      flat,
       tower:  towerName,
       cells,
       remark: remarkIdx >= 0 ? (r[remarkIdx] || '').trim() : '',
