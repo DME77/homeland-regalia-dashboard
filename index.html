@@ -474,6 +474,7 @@ let activeFapaSub        = 'flats';   // FAPA category: 'flats' | 'lobbies'
 let activeElecContractor = 'electrocraft'; // Electrical: which contractor sub-filter
 let activeElecTower    = 'all';       // Electrical: 'all' | a tower tab name
 let activeElecStatus   = 'all';       // Electrical: 'all' | done | progress | delay | pending
+let activeElecMilestone = 'all';      // Electrical flats: 'all' | testing | lights | db (milestone-done filter)
 let activeFireCategory   = 'tower';   // Fire: Tower | fhc | common
 let activeFireContractor = 'apex';    // Fire: which contractor sub-filter
 let activeFireTower    = 'all';       // Fire: 'all' | a tower tab name
@@ -5880,10 +5881,17 @@ async function renderElectrical(container, subnav, sub) {
     const towerNames = tabs.map(t => t.name);
     if (activeElecTower !== 'all' && !towerNames.includes(activeElecTower)) activeElecTower = 'all';
     const scope = activeElecTower === 'all' ? all : all.filter(f => f.tower === activeElecTower);
-    const counts = { all: scope.length, done:0, progress:0, delay:0, pending:0 };
-    scope.forEach(f => counts[f.status]++);
-    if (activeElecStatus !== 'all' && !ELEC_STATUS_TABS.some(s => s.key === activeElecStatus)) activeElecStatus = 'all';
-    const filtered = activeElecStatus === 'all' ? scope : scope.filter(f => f.status === activeElecStatus);
+    // Milestone filter cards (replace the old Done/Progress/Attention/Pending status cards).
+    // idx maps into each flat's mcells[] (aligned to ELEC_MILESTONES): 2=Testing, 3=Lights, 4=DB dressing.
+    const MS_CARDS = [
+      { key:'testing', idx:2, label:'Testing', color:'#0891b2', bg:'#ecfeff', border:'#a5f3fc', icon:'🔬' },
+      { key:'lights',  idx:3, label:'Lights',  color:'#d97706', bg:'#fffbeb', border:'#fde68a', icon:'💡' },
+      { key:'db',      idx:4, label:'DB',      color:'#7c3aed', bg:'#f5f3ff', border:'#ddd6fe', icon:'🔌' },
+    ];
+    const msDone = m => scope.filter(f => f.mcells[m.idx] && f.mcells[m.idx].cls === 'done').length;
+    if (activeElecMilestone !== 'all' && !MS_CARDS.some(m => m.key === activeElecMilestone)) activeElecMilestone = 'all';
+    const msSel = MS_CARDS.find(m => m.key === activeElecMilestone);
+    const filtered = msSel ? scope.filter(f => f.mcells[msSel.idx] && f.mcells[msSel.idx].cls === 'done') : scope;
     const towerPct = rows => rows.length ? Math.round(rows.filter(r => r.status === 'done').length / rows.length * 100) : 0;
     // ── Contractor sub-filter (above tower cards) ──
     const conFilter = `<div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:0 0 5px 2px">🔌 Contractor</div>
@@ -5893,9 +5901,9 @@ async function renderElectrical(container, subnav, sub) {
       ${towerNames.map(t => { const tr = all.filter(f => f.tower === t); if (!tr.length) return ''; const isA = activeElecTower === t;
         return `<button class="card${isA?' active':''}" data-electower="${escapeHtml(t)}" style="cursor:pointer;${isA?'border-color:#0e7490;background:#cffafe;box-shadow:0 0 0 3px #a5f3fc':''}"><div class="card-num" style="color:#0e7490">${tr.length}</div><div class="card-label">${escapeHtml(t)}</div><div class="card-desc">${towerPct(tr)}% done</div></button>`; }).join('')}
     </div>`;
-    const statusCards = `<div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:10px 0 4px 2px">⚡ Status · out of ${counts.all} flats</div><div class="cards">
-      ${ELEC_STATUS_TABS.map(t => { const pct = counts.all ? Math.round((counts[t.key]||0)/counts.all*100) : 0; const isA = activeElecStatus===t.key;
-        return `<button class="card${isA?' active':''}" data-elecstatus="${t.key}" style="cursor:pointer;border-color:${isA?t.color:'#e2e8f0'};background:${isA?t.bg:'#fff'};box-shadow:${isA?'0 0 0 3px '+t.border:'0 1px 4px rgba(0,0,0,0.05)'}"><div class="card-icon">${t.icon}</div><div class="card-num" style="color:${t.color}">${counts[t.key]||0}</div><div class="card-label">${escapeHtml(t.label)}</div><div class="card-desc">${escapeHtml(t.desc)}</div><div class="bar-row" style="margin-top:8px"><div class="bar-outer"><div class="bar-inner" style="width:${pct}%;background:${t.color}"></div></div><span class="bar-pct" style="color:${t.color}">${pct}%</span></div></button>`; }).join('')}
+    const statusCards = `<div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:10px 0 4px 2px">⚡ Milestone · done out of ${scope.length} flats</div><div class="cards">
+      ${MS_CARDS.map(m => { const done = msDone(m); const pct = scope.length ? Math.round(done/scope.length*100) : 0; const isA = activeElecMilestone===m.key;
+        return `<button class="card${isA?' active':''}" data-elecms="${m.key}" style="cursor:pointer;border-color:${isA?m.color:'#e2e8f0'};background:${isA?m.bg:'#fff'};box-shadow:${isA?'0 0 0 3px '+m.border:'0 1px 4px rgba(0,0,0,0.05)'}"><div class="card-icon">${m.icon}</div><div class="card-num" style="color:${m.color}">${done}</div><div class="card-label">${escapeHtml(m.label)}</div><div class="card-desc">of ${scope.length} done</div><div class="bar-row" style="margin-top:8px"><div class="bar-outer"><div class="bar-inner" style="width:${pct}%;background:${m.color}"></div></div><span class="bar-pct" style="color:${m.color}">${pct}%</span></div></button>`; }).join('')}
     </div>`;
     const pill = { done:['#16a34a','#f0fdf4','✓ Done'], progress:['#2563eb','#eff6ff','⏳ In progress'], delay:['#dc2626','#fef2f2','⚠ Attention'], pending:['#64748b','#f1f5f9','• Pending'] };
     const mIcon = { done:['#16a34a','#dcfce7','✓'], pending:['#94a3b8','#f8fafc','–'], problem:['#dc2626','#fee2e2','!'], note:['#d97706','#fef3c7','•'], na:['#cbd5e1','#ffffff','·'] };
@@ -5913,9 +5921,9 @@ async function renderElectrical(container, subnav, sub) {
     const showData = activeElecTower !== 'all';
     container.innerHTML = `<div class="eyebrow">${sub.icon} ${escapeHtml(sub.label)} <span class="tag live">LIVE</span> <span style="color:#94a3b8;font-size:11px;margin-left:6px">Flats · ${escapeHtml(con.label)} · ${escapeHtml(con.scope)}</span></div>${subnav}${catFilter}${conFilter}${towerCards}${showData ? statusCards + tableBlock : '<div class="empty" style="margin-top:10px">Select a tower above to view its flats.</div>'}`;
     wireNav();
-    container.querySelectorAll('[data-eleccontractor]').forEach(b => { b.addEventListener('click', () => { activeElecContractor = b.dataset.eleccontractor; activeElecTower = 'all'; activeElecStatus = 'all'; renderWork(); }); });
-    container.querySelectorAll('[data-electower]').forEach(b => { b.addEventListener('click', () => { activeElecTower = (activeElecTower === b.dataset.electower) ? 'all' : b.dataset.electower; activeElecStatus = 'all'; renderWork(); }); });
-    container.querySelectorAll('[data-elecstatus]').forEach(b => { b.addEventListener('click', () => { activeElecStatus = (activeElecStatus === b.dataset.elecstatus) ? 'all' : b.dataset.elecstatus; renderWork(); }); });
+    container.querySelectorAll('[data-eleccontractor]').forEach(b => { b.addEventListener('click', () => { activeElecContractor = b.dataset.eleccontractor; activeElecTower = 'all'; activeElecMilestone = 'all'; renderWork(); }); });
+    container.querySelectorAll('[data-electower]').forEach(b => { b.addEventListener('click', () => { activeElecTower = (activeElecTower === b.dataset.electower) ? 'all' : b.dataset.electower; activeElecMilestone = 'all'; renderWork(); }); });
+    container.querySelectorAll('[data-elecms]').forEach(b => { b.addEventListener('click', () => { activeElecMilestone = (activeElecMilestone === b.dataset.elecms) ? 'all' : b.dataset.elecms; renderWork(); }); });
   } catch (e) {
     container.innerHTML = `<div class="eyebrow">${sub.icon} ${escapeHtml(sub.label)}</div>${subnav}<div class="error"><strong>Couldn't load Electrical.</strong> ${escapeHtml(e.message || String(e))}</div>`;
     container.querySelectorAll('.sub-btn').forEach(b => { b.addEventListener('click', () => { activeWorkSub = b.dataset.key; renderWork(); }); });
