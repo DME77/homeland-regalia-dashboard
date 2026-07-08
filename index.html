@@ -408,7 +408,6 @@ const FACADE_FILES = [
   { contractor:'GRC',                   scope:'T1-T6',                  defaultTower:'', fileId:'1sdYkcMQaSx4gHj-tcPkKph1FoSp9zAfLqLLwPnQor7Q' },
   { contractor:'Vertical Louver',       scope:'T1-T6',                  defaultTower:'', fileId:'1aUw3JtuYO6_NK2NOcLfko9Xvbr0wuUyR0-sz2FhjRDg' },
   { contractor:'Spandrel Glazing',      scope:'T1, T5, T6',             defaultTower:'', fileId:'1PAn4OG0Swr3GmaG5KsceR5rVLPYt8uq5wdYfcEQIUm8' },
-  { contractor:'Tile Cladding',         scope:'T1-T6',                  defaultTower:'', fileId:'1g9OdlXU0lkw2RNs5HtOZBcDwBhqtKP4cki8wDOj3DDg' },
   { contractor:'Kitchen Shaft Door',    scope:'T1-T6',                  defaultTower:'', fileId:'1Eq5_nqi6AMyvbNLsiAw6I4DafCuLDJSPodjSLETsqPI' },
   { contractor:'Baffle Ceiling',        scope:'T1-T6 area-summary',     defaultTower:'', fileId:'1Fis0XdnyzqlvxUOCgK6is1hER5flR2cCfp9Jeqs7Ygw' },
   { contractor:'Club facade Art N Glass', scope:'Club Front',           defaultTower:'COMM', fileId:'1_BXroUkreb70599nI1-IXOnqAGDrr3743EG7UHgX7ow' },
@@ -3981,7 +3980,6 @@ async function renderTendering() {
 // ─── WORK EXECUTION TAB ───────────────────────────────────
 const WORK_SUBS = [
   { key:'facade',      label:'Facade',             icon:'🏢', wave:4, live:true },
-  { key:'tileCladding',label:'Tile Cladding',      icon:'🟫', wave:4, live:true, custom:'tileCladding' },
   { key:'interior',    label:'Interior',           icon:'🛋️', wave:5, live:true },
   { key:'mechanical',  label:'Mechanical',         icon:'🌡️', wave:2, live:true, custom:'mechanical' },
   { key:'electrical',  label:'Electrical',         icon:'⚡',  wave:3, live:true, custom:'electrical' },
@@ -4053,10 +4051,6 @@ async function renderWork() {
     renderFacadeItems(container, subnav, sub);
     return;
   }
-  if (sub.custom === 'tileCladding') {
-    renderTileCladding(container, subnav, sub);
-    return;
-  }
   if (!sub.live) {
     container.innerHTML = `
       <div class="eyebrow">${sub.icon} ${escapeHtml(sub.label)}</div>
@@ -4091,7 +4085,7 @@ async function renderWork() {
     ${subnav}
     ${liveBar('loading')}
     <div class="loading">⏳ Pulling from Drive…</div>`;
-  container.querySelectorAll('.sub-btn').forEach(b => {
+  container.querySelectorAll('.sub-btn[data-key]').forEach(b => {
     b.addEventListener('click', () => {
       activeWorkSub = b.dataset.key;
       activeWorkItem = 'all';
@@ -4108,16 +4102,25 @@ async function renderWork() {
     let breadcrumb = '';
     // Compute unique Items (contractor field). For Facade this is the item name; for MEP tabs this is the contractor.
     const allItemNames = [...new Set(allItems.map(r => r.contractor))].filter(Boolean).sort();
+    // Tile Cladding is a facade item too, but has its own sqft view (renderTileCladding).
+    // Inject it into the item list so it appears as a card alongside the others.
+    if (sub.key === 'facade' && !allItemNames.includes('Tile Cladding')) allItemNames.push('Tile Cladding');
     const itemLabel = sub.key === 'facade' ? 'Item' : 'Contractor';
     const itemIcon  = sub.key === 'facade' ? '🏢' : '👷';
     if (allItemNames.length >= 2) {
       const itemCounts = allItemNames.reduce((a, n) => { a[n] = allItems.filter(r => r.contractor === n).length; return a; }, {});
       itemNav = `<div style="font-size:10px;font-weight:700;color:#94a3b8;letter-spacing:1.5px;text-transform:uppercase;margin-bottom:8px">${itemIcon} ${itemLabel}</div>
         <div class="subnav">
-          ${allItemNames.map(n => `<button class="sub-btn${activeWorkItem===n?' active':''}" data-work-item="${escapeHtml(n)}">
-            <div class="icon">${sub.key==='facade'?'📦':'🛠️'}</div><div class="label">${escapeHtml(n)}</div><div class="meta">${itemCounts[n]||0} rows</div>
-          </button>`).join('')}
+          ${allItemNames.map(n => { const isTile = n === 'Tile Cladding';
+            return `<button class="sub-btn${activeWorkItem===n?' active':''}" data-work-item="${escapeHtml(n)}">
+            <div class="icon">${isTile?'🟫':(sub.key==='facade'?'📦':'🛠️')}</div><div class="label">${escapeHtml(n)}</div><div class="meta">${isTile?'sqft':(itemCounts[n]||0)+' rows'}</div>
+          </button>`; }).join('')}
         </div>`;
+      // Tile Cladding → dedicated sqft view, keeping the facade item nav on top for switching.
+      if (sub.key === 'facade' && activeWorkItem === 'Tile Cladding') {
+        await renderTileCladding(container, subnav, { icon:'🟫', label:'Tile Cladding', key:'facade' }, itemNav);
+        return;
+      }
       if (activeWorkItem !== 'all') {
         items = items.filter(r => r.contractor === activeWorkItem);
         breadcrumb = ` · ${escapeHtml(activeWorkItem)}`;
@@ -6555,12 +6558,13 @@ function parseTileCladding(csv, towerName) {
   return out;
 }
 let _tileParsed = null;
-async function renderTileCladding(container, subnav, sub) {
+async function renderTileCladding(container, subnav, sub, extraNav = '') {
   const wire = () => {
-    container.querySelectorAll('.sub-btn').forEach(b => b.addEventListener('click', () => { activeWorkSub = b.dataset.key; renderWork(); }));
+    container.querySelectorAll('.sub-btn[data-key]').forEach(b => b.addEventListener('click', () => { activeWorkSub = b.dataset.key; activeWorkItem = 'all'; renderWork(); }));
+    container.querySelectorAll('[data-work-item]').forEach(b => b.addEventListener('click', () => { activeWorkItem = b.dataset.workItem; activeWorkLocation = 'all'; activeWorkSide = 'all'; renderWork(); }));
     container.querySelectorAll('[data-tiletower]').forEach(b => b.addEventListener('click', () => { activeTileTower = b.dataset.tiletower; renderWork(); }));
   };
-  container.innerHTML = `<div class="eyebrow">${sub.icon} ${escapeHtml(sub.label)} <span class="tag live">LIVE</span></div>${subnav}<div class="loading">⏳ Pulling Tile Cladding sheet…</div>`;
+  container.innerHTML = `<div class="eyebrow">${sub.icon} ${escapeHtml(sub.label)} <span class="tag live">LIVE</span></div>${subnav}${extraNav}<div class="loading">⏳ Pulling Tile Cladding sheet…</div>`;
   wire();
   try {
     const tabs = SHEET_TABS[FILES.tileCladding] || [];
@@ -6570,7 +6574,7 @@ async function renderTileCladding(container, subnav, sub) {
       if (csv) all.push(...parseTileCladding(csv, tab.name));
     }
     if (!all.length) {
-      container.innerHTML = `<div class="eyebrow">${sub.icon} ${escapeHtml(sub.label)}</div>${subnav}<div class="error"><strong>No Tile Cladding rows parsed.</strong> Make sure the sheet is shared "Anyone with the link → Viewer".</div>`;
+      container.innerHTML = `<div class="eyebrow">${sub.icon} ${escapeHtml(sub.label)}</div>${subnav}${extraNav}<div class="error"><strong>No Tile Cladding rows parsed.</strong> Make sure the sheet is shared "Anyone with the link → Viewer".</div>`;
       wire(); return;
     }
     const towerNames = tabs.map(t => t.name).filter(n => all.some(r => r.tower === n));
@@ -6611,10 +6615,10 @@ async function renderTileCladding(container, subnav, sub) {
           <td style="padding:7px 10px;text-align:center">${badge(r.status)}</td></tr>`).join('')}</tbody>
       </table>
       <div style="padding:8px 10px;font-size:11px;color:#94a3b8">Source: <a href="https://docs.google.com/spreadsheets/d/${escapeHtml(FILES.tileCladding)}/edit" target="_blank" style="color:#1d4ed8;text-decoration:none">Tile Cladding sheet</a> · Activities with zero balance are marked Done.</div></div>`;
-    container.innerHTML = `<div class="eyebrow">${sub.icon} ${escapeHtml(sub.label)} <span class="tag live">LIVE</span></div>${subnav}${towerCards}${funnel}${table}`;
+    container.innerHTML = `<div class="eyebrow">${sub.icon} ${escapeHtml(sub.label)} <span class="tag live">LIVE</span></div>${subnav}${extraNav}${towerCards}${funnel}${table}`;
     wire();
   } catch (e) {
-    container.innerHTML = `<div class="eyebrow">${sub.icon} ${escapeHtml(sub.label)}</div>${subnav}<div class="error"><strong>Couldn't load Tile Cladding.</strong> ${escapeHtml(e.message || String(e))}</div>`;
+    container.innerHTML = `<div class="eyebrow">${sub.icon} ${escapeHtml(sub.label)}</div>${subnav}${extraNav}<div class="error"><strong>Couldn't load Tile Cladding.</strong> ${escapeHtml(e.message || String(e))}</div>`;
     wire();
   }
 }
