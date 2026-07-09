@@ -6623,13 +6623,22 @@ async function renderTileCladding(container, subnav, sub, extraNav = '') {
   }
 }
 // Parse one tower tab → [{flat, vendor, kitchen:[5], wardrobe:[5], note}]
-function parseKitchenWardrobe(csv) {
+function parseKitchenWardrobe(csv, towerName) {
   const rows = _kwCsvRows(csv);
   const out = [];
+  // Some tower tabs (e.g. TOWER-03, TOWER-04) list flats as bare unit numbers
+  // ("11","12"…) instead of the "T04/11" form. Derive the tower prefix so those parse.
+  const tnum = (String(towerName || '').match(/\d+/) || [''])[0].slice(-2).padStart(2, '0');
   for (const r of rows) {
-    const flat = (r[0] || '').trim();
-    // Data rows start with a flat id like "T03/11" (a stray "T03163" also appears).
-    if (!/^T0\d\s*\/?\s*\d{2,3}$/i.test(flat)) continue;
+    let flat = (r[0] || '').trim();
+    // Data rows are either "T03/11" (a stray "T03163" also appears) or a bare "11".
+    if (/^T0\d\s*\/?\s*\d{2,3}$/i.test(flat)) {
+      flat = flat.replace(/\s+/g, '');
+    } else if (/^\d{2,3}$/.test(flat) && tnum !== '00') {
+      flat = `T${tnum}/${flat}`;            // bare unit "11" → "T04/11"
+    } else {
+      continue;
+    }
     const cells = r.slice(0, 12).map(c => (c || '').trim());
     while (cells.length < 12) cells.push('');
     out.push({
@@ -6708,7 +6717,7 @@ async function renderKitchenWardrobeInto(host, scope) {
     for (const tab of kwTabs) {
       const csv = await fetchSheetTabRaw(FILES.kitchenWardrobe, tab.gid).catch(() => '');
       if (!csv || !csv.trim()) continue;
-      parseKitchenWardrobe(csv).forEach(row => {
+      parseKitchenWardrobe(csv, tab.name).forEach(row => {
         row.tower  = tab.name;
         row.cells  = isKitchen ? row.kitchen : row.wardrobe;   // the 5 stage cells for this scope
         row.status = kwClassify(row.cells, row.vendor);
