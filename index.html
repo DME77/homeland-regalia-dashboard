@@ -479,6 +479,7 @@ let activeFireContractor = 'apex';    // Fire: which contractor sub-filter
 let activeFireTower    = 'all';       // Fire: 'all' | a tower tab name
 let activeFireStatus   = 'all';       // Fire: 'all' | done | progress | delay | pending
 let activeDrawingsDependency = 'all'; // Drawings tab Dependency filter (Dep-1 value)
+let activeKitchenView = 'delivery';   // Commercial Kitchen sub-category: 'delivery' | 'execution'
 let activeKitchenDelivery = 'all';    // Commercial Kitchen: 'all' | 'received' | 'pending'
 let activeKitchenCommissioning = 'all'; // Commercial Kitchen: 'all' | 'received' | 'pending'
 let activeKitchenSection = 'all';      // Commercial Kitchen: 'all' (every sheet) | a specific section label
@@ -6168,7 +6169,70 @@ function unwrapKitchenContent(res) {
   }
   return walk(res, 0);
 }
+const KITCHEN_EXEC_GID = 1127153102;   // "Kitchen Execution" tab in the Main Kitchen sheet
+function kitchenViewNavHtml() {
+  return `<div style="font-size:10px;font-weight:700;color:#94a3b8;letter-spacing:1.5px;text-transform:uppercase;margin:0 0 8px 2px">🍽️ Commercial Kitchen</div>
+    <div class="subnav" style="margin-bottom:12px">
+      <button class="sub-btn${activeKitchenView==='delivery'?' active':''}" data-kview="delivery"><div class="icon">📦</div><div class="label">Delivery</div></button>
+      <button class="sub-btn${activeKitchenView==='execution'?' active':''}" data-kview="execution"><div class="icon">⚙️</div><div class="label">Execution</div></button>
+    </div>`;
+}
+function wireKitchenView(host) {
+  host.querySelectorAll('[data-kview]').forEach(b => b.addEventListener('click', () => {
+    activeKitchenView = b.dataset.kview;
+    activeKitchenDelivery = 'all'; activeKitchenCommissioning = 'all';
+    renderPurchasableTab();
+  }));
+}
+// Parse the "Kitchen Execution" tab → [{area, civil, mep}]
+function parseKitchenExecution(csv) {
+  const rows = _kwCsvRows(csv);
+  const out = [];
+  for (const r of rows) {
+    const sno = (r[0] || '').trim();
+    const area = (r[1] || '').trim();
+    if (!/^\d+$/.test(sno) || !area) continue;
+    out.push({ area, civil: (r[2] || '').trim(), mep: (r[3] || '').trim() });
+  }
+  return out;
+}
+async function renderKitchenExecutionInto(host) {
+  const viewNav = kitchenViewNavHtml();
+  host.innerHTML = `${liveBar('loading')}${viewNav}<div class="loading">⏳ Pulling Kitchen Execution…</div>`;
+  wireKitchenView(host);
+  try {
+    const csv = await fetchSheetTabRaw(FILES.commercialKitchen, KITCHEN_EXEC_GID).catch(() => '');
+    const rows = parseKitchenExecution(csv);
+    if (!rows.length) {
+      host.innerHTML = `${liveBar('live',0,'Kitchen Execution')}${viewNav}<div class="error"><strong>No Kitchen Execution rows parsed.</strong> Make sure the sheet is shared "Anyone with the link → Viewer".</div>`;
+      wireKitchenView(host); return;
+    }
+    const isDone = v => /^(true|✔|yes|y|done|complete|completed)$/i.test((v || '').trim());
+    const civilDone = rows.filter(r => isDone(r.civil)).length;
+    const mepDone   = rows.filter(r => isDone(r.mep)).length;
+    const cell = v => { const t = (v || '').trim();
+      if (isDone(t)) return `<span class="pill" style="background:#dcfce7;color:#16a34a">Done</span>`;
+      if (!t || t === '-' || t === '✗' || /^false$/i.test(t)) return `<span class="pill" style="background:#fef2f2;color:#b91c1c">Pending</span>`;
+      return `<span class="pill" style="background:#fef3c7;color:#b45309">${escapeHtml(t)}</span>`; };
+    const card = (label,num,tot,c,ring) => `<button class="card" style="min-width:170px;border-color:${ring}"><div class="card-num" style="color:${c};font-size:22px">${num}/${tot}</div><div class="card-label" style="font-size:11px">${label}</div><div class="card-desc" style="font-size:10px;color:#64748b">areas complete</div></button>`;
+    const table = `<div class="tbl-wrap" style="margin-top:12px"><div class="tbl-head" style="background:#eff6ff;border-bottom:1px solid #bfdbfe"><span>⚙️</span><span class="tbl-title" style="color:#1e3a5f">Kitchen Execution — by area</span><span class="tbl-count" style="background:#1e3a5f">${rows.length} areas</span></div>
+      <table style="width:100%"><thead><tr><th>#</th><th>Area</th><th style="text-align:center">Civil activities</th><th style="text-align:center">MEP</th></tr></thead>
+      <tbody>${rows.map((r,i) => `<tr><td>${i+1}</td><td style="font-weight:600;color:#1e293b">${escapeHtml(r.area)}</td><td style="text-align:center">${cell(r.civil)}</td><td style="text-align:center">${cell(r.mep)}</td></tr>`).join('')}</tbody></table></div>`;
+    host.innerHTML = `${liveBar('live', rows.length, 'Main Kitchen final details.xlsx · Kitchen Execution')}${viewNav}
+      <div class="cards" style="margin-bottom:4px">
+        ${card('🧱 Civil activities', civilDone, rows.length, '#7c3aed', '#e9d5ff')}
+        ${card('🔌 MEP', mepDone, rows.length, '#0e7490', '#a5f3fc')}
+      </div>
+      ${table}
+      <div style="font-size:11px;color:#94a3b8;text-align:center;margin-top:8px">Source: <a href="https://docs.google.com/spreadsheets/d/${escapeHtml(FILES.commercialKitchen)}/edit#gid=${KITCHEN_EXEC_GID}" target="_blank" style="color:#1d4ed8;text-decoration:none">Kitchen Execution tab</a> · Use the Reload button to refresh.</div>`;
+    wireKitchenView(host);
+  } catch (e) {
+    host.innerHTML = `${liveBar('live',0,'Kitchen Execution')}${viewNav}<div class="error"><strong>Failed to load Kitchen Execution:</strong> ${escapeHtml(e?.message || String(e))}</div>`;
+    wireKitchenView(host);
+  }
+}
 async function renderCommercialKitchenInto(host) {
+  if (activeKitchenView === 'execution') { await renderKitchenExecutionInto(host); return; }
   host.innerHTML = `${liveBar('loading')}<div class="loading">⏳ Pulling Main Kitchen sheet…</div>`;
   try {
     // Fetch each tab separately so we can assign correct section labels
@@ -6321,7 +6385,7 @@ async function renderCommercialKitchenInto(host) {
       { key:'fitout-item',   label:'Fitout Item',    c:'#1d4ed8', activeBg:'#dbeafe', ring:'#93c5fd' },
       { key:'not-received',  label:'Not Received',   c:'#475569', activeBg:'#f1f5f9', ring:'#cbd5e1' },
     ];
-    const comCards = `<div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:10px 0 4px 2px">⚙️ Commissioning status</div><div class="cards" style="overflow-x:auto;flex-wrap:nowrap;padding-bottom:6px">
+    const comCards = `<div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:10px 0 4px 2px">⚙️ Execution status</div><div class="cards" style="overflow-x:auto;flex-wrap:nowrap;padding-bottom:6px">
       ${colorCardHtml('commissioning','all','All',comCounts.all,activeKitchenCommissioning==='all',{ c:'#1e3a5f', activeBg:'#e0e7ff', ring:'#c7d2fe' },'total items')}
       ${COM_STATUSES.map(s => colorCardHtml('commissioning', s.key, s.label, comCounts[s.key]||0, activeKitchenCommissioning===s.key, { c:s.c, activeBg:s.activeBg, ring:s.ring }, `of ${comCounts.all}`)).join('')}
     </div>`;
@@ -6424,6 +6488,7 @@ async function renderCommercialKitchenInto(host) {
     </div>`;
     host.innerHTML = `
       ${liveBar('live', allRows.length, 'Main Kitchen final details.xlsx')}
+      ${kitchenViewNavHtml()}
       <div style="background:#f0f9ff;border:1px solid #bae6fd;border-radius:10px;padding:10px 14px;margin-bottom:12px;font-size:12px;color:#075985;display:flex;gap:14px;flex-wrap:wrap">
         <span><strong>Category:</strong> ${escapeHtml(activeKitchenSection === 'all' ? 'All Items' : activeKitchenSection)}</span>
         <span>·</span>
@@ -6438,8 +6503,7 @@ async function renderCommercialKitchenInto(host) {
       ${activeKitchenArea === 'all' ? '' : `
         ${sectionCardsHtml}
         ${subAreaCards}
-        ${delCards}
-        ${comCards}
+        ${activeKitchenView === 'delivery' ? delCards : comCards}
       `}
       ${timelineHtml}
       <div class="tbl-wrap" style="margin-top:12px">
@@ -6454,6 +6518,7 @@ async function renderCommercialKitchenInto(host) {
         Source: <a href="https://docs.google.com/spreadsheets/d/1NOqYCKjDQRQ_UHeT65vncPPQD5wgMgyu/edit" target="_blank" style="color:#1d4ed8;text-decoration:none">Main Kitchen final details.xlsx</a>
         · Use the Reload button at the top to refresh.
       </div>`;
+    wireKitchenView(host);
     host.querySelectorAll('[data-kfilter-group]').forEach(b => {
       b.addEventListener('click', () => {
         const g = b.dataset.kfilterGroup, k = b.dataset.kfilterKey;
