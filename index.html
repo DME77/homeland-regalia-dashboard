@@ -320,6 +320,7 @@ const FILES = {
   interior:       '15WH66qd3e04ojvDhg7DQiWVDOLa9oDvo8LQDpJtQL_U',
   elevators:      '1_p6ElHE6TsrEzrSLxpCF_BFcsQhLZmLT',
   commercialKitchen: '1831xcw0P-qb1BKL1qtVUHwrLyC5TFLGGdlHUDSEIsEA',
+  chinaPending: '1nexBq-N0efE2Vc33yELi7wNo1kaL-HqSRV4H87GKyGc',
   kitchenWardrobe: '11MghP-8uexAw292CoYSSKNoZswP1vpzgPNk8_huGrh4',
   vanity: '1lVaxVDsvSwkCPeD4Fzc2lCvrHYGgQB_IjiNGJyEdRxA',
   doors: '1M7jIV1lz4lLtujr7Itz1AiSKuiZIKDA-7Y331lYo9LA',
@@ -351,6 +352,7 @@ const FILES = {
 const LABOUR_INTERIOR_MONTHLY = [
   { yearMonth: '2026-05', fileId: '1FvInWQZVxmqBjrfVH3QXZrz9KlACnW-H70t7OlQ39mo', tabSuffix: 'May'  },
   { yearMonth: '2026-06', fileId: '1cqc7M8OjL_23iGk4nUNyNf4GLkxUbimb9PZoOGn-6MI',  tabSuffix: 'June' },
+  { yearMonth: '2026-07', fileId: '1GuCRKTWr1nXC2r_AF4GLcdNRsN-z9uDPmp-8ybNw4mI',  tabSuffix: 'July' },
 ];
 const LABOUR_FACADE_MONTHLY = [
   { yearMonth: '2026-05', fileId: '1mmjOcW8TTprShp1stzVpT6HnUkUWeJ0a0A8PC7R5ky4', tabSuffix: 'May'  },
@@ -511,6 +513,10 @@ let activeDoorsStatus = 'all';         // 'all' | 'done' | 'pending' | 'na' | 'h
 
 // Tile Cladding sub-tab (Facade)
 let activeTileTower = 'all';           // 'all' | 'Tower 1' | …
+
+// China Pending Order sub-tab (Purchasable Items)
+let activeChinaStatus = 'all';         // 'all' | 'ready' | 'process' | 'notstarted'
+let activeChinaCity   = 'all';         // 'all' | a city/location
 
 // ─── HELPERS ──────────────────────────────────────────────
 function escapeHtml(s) {
@@ -7398,19 +7404,138 @@ const PURCHASABLE_SUBS = [
   { key:'vanity',   label:'Vanity', icon:'🪞' },
   { key:'doors',    label:'Doors', icon:'🚪' },
   { key:'watcon',   label:'Watcon (Pools & Spa)', icon:'💧' },
+  { key:'china-stock',   label:'China Stock',         icon:'🏺', pending:true },
+  { key:'china-pending', label:'China Pending Order', icon:'📦' },
+  { key:'kitchen-sink',  label:'Kitchen Sink',        icon:'🚰', pending:true },
 ];
+function renderPurchasablePlaceholder(host, label) {
+  host.innerHTML = `<div class="tbl-wrap" style="border-color:#e2e8f0"><div class="tbl-head" style="background:#f8fafc;border-bottom:1px solid #e2e8f0"><span>🕐</span><span class="tbl-title" style="color:#1e3a5f">${escapeHtml(label)}</span><span class="tag" style="background:#fef3c7;color:#b45309;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;margin-left:6px">SOURCE PENDING</span></div>
+    <div class="empty" style="padding:30px;text-align:center;color:#64748b">📄 <strong>${escapeHtml(label)}</strong> isn't wired up yet.<br><span style="font-size:12px">Share the source sheet link &amp; tab GID and I'll connect it live.</span></div></div>`;
+}
+// ─── China Pending Order — order pipeline tracker ───────────
+const _chinaDone = v => /^(✔|true|yes|done|y)$/i.test((v || '').trim());
+const _chinaNA   = v => /^na$/i.test((v || '').trim());
+const CHINA_MS = [
+  { key:'proposal', label:'Proposal' },
+  { key:'pi',       label:'PI' },
+  { key:'drawing',  label:'Drawing' },
+  { key:'po',       label:'PO' },
+  { key:'payment',  label:'Payment' },
+];
+function _chinaCity(c) { const t = (c || '').trim(); if (!t || /share|bhayia|boq|pics/i.test(t)) return 'TBD'; return t; }
+function _chinaStatus(r) {
+  const ms = CHINA_MS.map(m => r[m.key]);
+  const applic = ms.filter(v => !_chinaNA(v) && (v || '').trim() !== '');
+  const done = applic.filter(_chinaDone).length;
+  if (applic.length && done === applic.length) return 'ready';
+  if (done === 0) return 'notstarted';
+  return 'process';
+}
+function parseChinaPending(csv) {
+  const rows = _kwCsvRows(csv);
+  let hi = rows.findIndex(r => r.some(c => /^\s*item\s*$/i.test((c || '').trim())));
+  if (hi < 0) hi = 0;
+  const hdr = rows[hi].map(c => (c || '').toLowerCase().trim());
+  const col = re => hdr.findIndex(h => re.test(h));
+  const ci = { item:col(/item/), city:col(/location|city/), proposal:col(/proposal/), pi:col(/\bpi\b/),
+               drawing:col(/drawing/), po:col(/\bpo\b/), payment:col(/payment/), ddate:col(/dispatch\s*date/) };
+  const out = [];
+  for (let i = hi + 1; i < rows.length; i++) {
+    const r = rows[i]; const sno = (r[0] || '').trim(); const item = (r[ci.item] || '').trim();
+    if (!/^\d+$/.test(sno) || !item) continue;
+    out.push({ sno, item,
+      city:     ci.city>=0 ? (r[ci.city] || '').trim() : '',
+      proposal: ci.proposal>=0 ? (r[ci.proposal] || '').trim() : '',
+      pi:       ci.pi>=0 ? (r[ci.pi] || '').trim() : '',
+      drawing:  ci.drawing>=0 ? (r[ci.drawing] || '').trim() : '',
+      po:       ci.po>=0 ? (r[ci.po] || '').trim() : '',
+      payment:  ci.payment>=0 ? (r[ci.payment] || '').trim() : '',
+      ddate:    ci.ddate>=0 ? (r[ci.ddate] || '').trim() : '' });
+  }
+  return out;
+}
+async function renderChinaPendingInto(host) {
+  host.innerHTML = `${liveBar('loading')}<div class="loading">⏳ Pulling China Pending Order sheet…</div>`;
+  try {
+    const csv = await fetchSheetTabRaw(FILES.chinaPending, 0).catch(() => '');
+    const all = parseChinaPending(csv);
+    if (!all.length) {
+      host.innerHTML = `<div class="error"><strong>No China Pending Order rows parsed.</strong> Make sure the sheet is shared "Anyone with the link → Viewer".</div>`;
+      return;
+    }
+    const STAT = { ready:{c:'#16a34a',bg:'#dcfce7',ring:'#86efac',label:'Ready to dispatch',icon:'✅'},
+                   process:{c:'#b45309',bg:'#fef3c7',ring:'#fde68a',label:'In process',icon:'🕐'},
+                   notstarted:{c:'#dc2626',bg:'#fee2e2',ring:'#fca5a5',label:'Not started',icon:'⭕'} };
+    all.forEach(r => r._st = _chinaStatus(r));
+    if (activeChinaStatus !== 'all' && !STAT[activeChinaStatus]) activeChinaStatus = 'all';
+    const cities = [...new Set(all.map(r => _chinaCity(r.city)))];
+    if (activeChinaCity !== 'all' && !cities.includes(activeChinaCity)) activeChinaCity = 'all';
+    let rows = all;
+    if (activeChinaStatus !== 'all') rows = rows.filter(r => r._st === activeChinaStatus);
+    if (activeChinaCity !== 'all')   rows = rows.filter(r => _chinaCity(r.city) === activeChinaCity);
+    const cnt = st => all.filter(r => r._st === st).length;
+    const card = (group,key,num,label,desc,pal,active) => `<button class="card${active?' active':''}" data-china-group="${group}" data-china-key="${escapeHtml(key)}"
+      style="flex:0 0 auto;min-width:150px;cursor:pointer;border-color:${active?pal.c:'#e2e8f0'};background:${active?pal.bg:'#fff'};box-shadow:${active?'0 0 0 3px '+pal.ring:'0 1px 4px rgba(0,0,0,0.05)'}">
+      <div class="card-num" style="color:${pal.c};font-size:22px">${num}</div><div class="card-label" style="font-size:11px">${escapeHtml(label)}</div>${desc?`<div class="card-desc" style="font-size:10px;color:#64748b">${escapeHtml(desc)}</div>`:''}</button>`;
+    const navy = {c:'#1e3a5f',bg:'#e0e7ff',ring:'#c7d2fe'};
+    const statusCards = `<div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:0 0 4px 2px">📦 Order status</div><div class="cards" style="overflow-x:auto;flex-wrap:nowrap;padding-bottom:6px">
+      ${card('status','all',all.length,'All items','total',navy,activeChinaStatus==='all')}
+      ${['ready','process','notstarted'].map(st => card('status',st,cnt(st),STAT[st].icon+' '+STAT[st].label,`of ${all.length}`,STAT[st],activeChinaStatus===st)).join('')}
+    </div>`;
+    const cityPal = {c:'#0e7490',bg:'#cffafe',ring:'#a5f3fc'};
+    const cityCards = `<div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:10px 0 4px 2px">📍 Location / City</div><div class="cards" style="overflow-x:auto;flex-wrap:nowrap;padding-bottom:6px">
+      ${card('city','all',cities.length,'All locations','cities',navy,activeChinaCity==='all')}
+      ${cities.map(c => card('city',c,all.filter(r=>_chinaCity(r.city)===c).length,c,'items',cityPal,activeChinaCity===c)).join('')}
+    </div>`;
+    const msPill = v => { const t = (v || '').trim();
+      if (_chinaNA(t))  return `<span class="pill" style="background:#f1f5f9;color:#94a3b8">NA</span>`;
+      if (_chinaDone(t))return `<span class="pill" style="background:#dcfce7;color:#16a34a">✓</span>`;
+      if (!t)           return `<span style="color:#cbd5e1">—</span>`;
+      return `<span class="pill" style="background:#fef2f2;color:#b91c1c">✗</span>`; };
+    const stPill = st => `<span class="pill" style="background:${STAT[st].bg};color:${STAT[st].c}">${STAT[st].label}</span>`;
+    const tableHtml = rows.length === 0 ? `<div class="empty">No items match these filters.</div>`
+      : `<table style="min-width:840px"><thead><tr><th>#</th><th>Item</th><th>Location</th>
+          ${CHINA_MS.map(m => `<th style="text-align:center">${escapeHtml(m.label)}</th>`).join('')}
+          <th style="text-align:center">Dispatch</th><th style="text-align:center">Status</th></tr></thead>
+        <tbody>${rows.map((r,i) => `<tr>
+          <td>${i+1}</td>
+          <td style="font-weight:600;color:#1e293b">${escapeHtml(r.item)}</td>
+          <td style="font-size:11px;color:#64748b">${escapeHtml(_chinaCity(r.city)==='TBD' ? (r.city||'—') : r.city)}</td>
+          ${CHINA_MS.map(m => `<td style="text-align:center">${msPill(r[m.key])}</td>`).join('')}
+          <td style="text-align:center">${r.ddate ? `<span class="pill" style="background:#dbeafe;color:#1d4ed8;font-size:10px">${escapeHtml(r.ddate)}</span>` : '<span style="color:#cbd5e1">—</span>'}</td>
+          <td style="text-align:center">${stPill(r._st)}</td></tr>`).join('')}</tbody></table>`;
+    host.innerHTML = `${liveBar('live', all.length, 'China Pending Order')}
+      ${statusCards}${cityCards}
+      <div class="tbl-wrap" style="margin-top:12px"><div class="tbl-head" style="background:#eff6ff;border-bottom:1px solid #bfdbfe"><span>📦</span><span class="tbl-title" style="color:#1e3a5f">China Pending Order</span><span class="tbl-count" style="background:#1e3a5f">${rows.length} items</span></div>
+        <div style="overflow-x:auto">${tableHtml}</div></div>
+      <div style="font-size:11px;color:#94a3b8;text-align:center;margin-top:8px">Source: <a href="https://docs.google.com/spreadsheets/d/${escapeHtml(FILES.chinaPending)}/edit" target="_blank" style="color:#1d4ed8;text-decoration:none">China Pending Order sheet</a> · Stages: Proposal → PI → Drawing → PO → Payment → Dispatch.</div>`;
+    host.querySelectorAll('[data-china-group]').forEach(b => b.addEventListener('click', () => {
+      const g = b.dataset.chinaGroup, k = b.dataset.chinaKey;
+      if (g === 'status') activeChinaStatus = (activeChinaStatus === k ? 'all' : k);
+      else if (g === 'city') activeChinaCity = (activeChinaCity === k ? 'all' : k);
+      renderPurchasableTab();
+    }));
+  } catch (e) {
+    host.innerHTML = `<div class="error"><strong>Failed to load China Pending Order:</strong> ${escapeHtml(e?.message || String(e))}</div>`;
+  }
+}
 function renderPurchasableTab() {
   const container = document.getElementById('tab-purchasable');
   const active = PURCHASABLE_SUBS.find(s => s.key === activePurchasableSub) || PURCHASABLE_SUBS[0];
   const subnav = `<div class="subnav">${PURCHASABLE_SUBS.map(s => `
     <button class="sub-btn${activePurchasableSub===s.key?' active':''}" data-psub="${s.key}">
-      <div class="icon">${s.icon}</div><div class="label">${escapeHtml(s.label)}</div><div class="meta">🟢 Live</div>
+      <div class="icon">${s.icon}</div><div class="label">${escapeHtml(s.label)}</div><div class="meta">${s.pending ? 'Soon' : '🟢 Live'}</div>
     </button>`).join('')}</div>`;
-  container.innerHTML = `<div class="eyebrow">🛒 Purchasable Items — ${escapeHtml(active.label)} <span class="tag live" style="margin-left:6px">LIVE</span></div>${subnav}<div id="purchasable-body"></div>`;
+  const eyebrowTag = active.pending
+    ? '<span class="tag" style="background:#fef3c7;color:#b45309;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;margin-left:6px">SOON</span>'
+    : '<span class="tag live" style="margin-left:6px">LIVE</span>';
+  container.innerHTML = `<div class="eyebrow">🛒 Purchasable Items — ${escapeHtml(active.label)} ${eyebrowTag}</div>${subnav}<div id="purchasable-body"></div>`;
   container.querySelectorAll('[data-psub]').forEach(b =>
     b.addEventListener('click', () => { activePurchasableSub = b.dataset.psub; renderPurchasableTab(); }));
   const body = container.querySelector('#purchasable-body');
-  if (active.key === 'watcon') renderWatconInto(body);
+  if (active.pending) renderPurchasablePlaceholder(body, active.label);
+  else if (active.key === 'china-pending') renderChinaPendingInto(body);
+  else if (active.key === 'watcon') renderWatconInto(body);
   else if (active.key === 'kw-kitchen')  renderKitchenWardrobeInto(body, 'kitchen');
   else if (active.key === 'kw-wardrobe') renderKitchenWardrobeInto(body, 'wardrobe');
   else if (active.key === 'vanity')      renderVanityInto(body);
