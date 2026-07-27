@@ -4058,11 +4058,9 @@ function parseBasements(csv, block) {
   return out;
 }
 async function renderBasements(container, subnav, sub) {
-  if (!BASEMENT_DISCIPLINES.some(d => d.key === activeBasementDisc)) activeBasementDisc = BASEMENT_DISCIPLINES[0].key;
   const wire = () => {
     container.querySelectorAll('.sub-btn').forEach(b => b.addEventListener('click', () => { activeWorkSub = b.dataset.key; renderWork(); }));
     container.querySelectorAll('[data-baseblock]').forEach(b => b.addEventListener('click', () => { activeBasementBlock = b.dataset.baseblock; renderWork(); }));
-    container.querySelectorAll('[data-basedisc]').forEach(b => b.addEventListener('click', () => { activeBasementDisc = b.dataset.basedisc; renderWork(); }));
   };
   container.innerHTML = `<div class="eyebrow">${sub.icon} ${escapeHtml(sub.label)} <span class="tag live">LIVE</span></div>${subnav}<div class="loading">⏳ Pulling Basement trackers…</div>`;
   wire();
@@ -4094,30 +4092,29 @@ async function renderBasements(container, subnav, sub) {
       ${blockCard('all','All Basements',all)}
       ${blocks.map(b => blockCard(b,b,all.filter(r=>r.block===b))).join('')}
     </div>`;
-    // Discipline cards (clickable) — each shows % complete in scope
-    const discRow = `<div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:10px 0 4px 2px">🗂️ Discipline</div><div class="cards" style="overflow-x:auto;flex-wrap:nowrap;padding-bottom:6px">
-      ${BASEMENT_DISCIPLINES.map(d => { const p = discPct(scope, d.key); const isA = activeBasementDisc===d.key;
-        return `<button class="card${isA?' active':''}" data-basedisc="${d.key}" style="flex:0 0 auto;min-width:132px;cursor:pointer;border-color:${isA?d.c:'#e2e8f0'};background:${isA?d.bg:'#fff'};box-shadow:${isA?'0 0 0 3px '+d.ring:'0 1px 4px rgba(0,0,0,0.05)'}"><div class="card-icon" style="font-size:16px">${d.icon}</div><div class="card-num" style="color:${d.c};font-size:19px">${p.pct}%</div><div class="card-label" style="font-size:11.5px;font-weight:700;color:${d.c}">${escapeHtml(d.label)}</div><div class="card-desc" style="font-size:10px;color:#64748b">${p.done}/${p.tracked} done</div></button>`; }).join('')}
-    </div>`;
-    // Table for the active discipline (rows where the discipline is tracked, i.e. non-blank)
-    const active = BASEMENT_DISCIPLINES.find(d => d.key === activeBasementDisc);
-    const discRows = scope.filter(r => (r[active.key]||'').trim() !== '');
-    const cnt = { done:0, progress:0, notstarted:0, na:0 };
-    scope.forEach(r => { const s = basementStatus(r[active.key]); if (s in cnt) cnt[s]++; });
-    const pill = s => { const st = BASEMENT_STATUS[s]; return st ? `<span class="pill" style="background:${st.bg};color:${st.c}">${st.label}</span>` : '<span style="color:#cbd5e1">—</span>'; };
-    const statChip = (k) => `<span style="display:inline-block;margin-right:8px;font-size:11px"><b style="color:${BASEMENT_STATUS[k].c}">${cnt[k]}</b> ${BASEMENT_STATUS[k].label}</span>`;
-    const summary = `<div style="margin:10px 0 6px;font-size:12px;color:#475569">${statChip('done')}${statChip('progress')}${statChip('notstarted')}${statChip('na')}</div>`;
-    const tableHtml = discRows.length === 0 ? `<div class="empty">No areas track ${escapeHtml(active.label)} in this scope.</div>`
-      : `<table style="width:100%;font-size:12px"><thead><tr style="background:#f8fafc;text-align:left;color:#475569"><th style="padding:6px 9px">Basement</th><th style="padding:6px 9px">Category</th><th style="padding:6px 9px">Area / Location</th><th style="padding:6px 9px;text-align:center">${escapeHtml(active.label)}</th><th style="padding:6px 9px">Remarks</th></tr></thead>
-        <tbody>${discRows.map(r => `<tr style="border-top:1px solid #eef2f7">
-          <td style="padding:6px 9px;color:#64748b;font-size:11px">${escapeHtml(r.block.replace(/\s*\(.*\)/,''))}</td>
-          <td style="padding:6px 9px;font-size:11px;color:#64748b">${escapeHtml(r.category||'—')}</td>
-          <td style="padding:6px 9px;font-weight:600;color:#1e293b">${escapeHtml(r.area)}</td>
-          <td style="padding:6px 9px;text-align:center">${pill(basementStatus(r[active.key]))}</td>
-          <td style="padding:6px 9px;font-size:11px;color:${r.rem?'#b45309':'#d1d5db'}">${escapeHtml(r.rem||'—')}</td></tr>`).join('')}</tbody></table>`;
-    const tableBlock = `<div class="tbl-wrap" style="border-color:#e2e8f0;margin-top:4px"><div class="tbl-head" style="background:#f8fafc;border-bottom:1px solid #e2e8f0"><span>${active.icon}</span><span class="tbl-title" style="color:#1e3a5f">Basements · ${escapeHtml(active.label)} — ${escapeHtml(activeBasementBlock==='all'?'All Basements':activeBasementBlock)}</span><span class="tbl-count" style="background:#1e3a5f">${discRows.length} areas</span></div>${summary}<div style="overflow-x:auto">${tableHtml}</div>
-      <div style="padding:8px 10px;font-size:11px;color:#94a3b8">Source: <a href="https://docs.google.com/spreadsheets/d/${escapeHtml(FILES.basements)}/edit" target="_blank" style="color:#1d4ed8;text-decoration:none">Basement Work Status Tracker</a> · % = Completed ÷ (tracked areas, excl. N/A).</div></div>`;
-    container.innerHTML = `<div class="eyebrow">${sub.icon} ${escapeHtml(sub.label)} <span class="tag live">LIVE</span></div>${subnav}${blockRow}${discRow}${tableBlock}`;
+    // Discipline completion summary (text strip — cards removed) + full status matrix
+    const discSummary = `<div style="margin:12px 0 4px;font-size:11px;color:#475569;display:flex;gap:16px;flex-wrap:wrap">${BASEMENT_DISCIPLINES.map(d=>{const p=discPct(scope,d.key);return `<span><b style="color:${d.c}">${d.icon} ${escapeHtml(d.label)} · ${p.pct}%</b> <span style="color:#94a3b8">(${p.done}/${p.tracked})</span></span>`;}).join('')}</div>`;
+    const cellPill = v => { const s=basementStatus(v);
+      if(s==='done')       return '<span class="pill" style="background:#dcfce7;color:#16a34a">✓</span>';
+      if(s==='progress')   return '<span class="pill" style="background:#fef3c7;color:#b45309">◑</span>';
+      if(s==='notstarted') return '<span class="pill" style="background:#fee2e2;color:#b91c1c">✗</span>';
+      if(s==='na')         return '<span class="pill" style="background:#f1f5f9;color:#94a3b8">NA</span>';
+      return '<span style="color:#cbd5e1">—</span>'; };
+    const D = BASEMENT_DISCIPLINES;
+    const tableHtml = `<table style="width:100%;font-size:11.5px;border-collapse:collapse"><thead><tr style="background:#f8fafc;text-align:left;color:#475569">
+        <th style="padding:6px 8px">Basement</th><th style="padding:6px 8px">Category</th><th style="padding:6px 8px">Area / Location</th>
+        ${D.map(d=>`<th style="padding:6px 6px;text-align:center">${escapeHtml(d.label)}</th>`).join('')}
+        <th style="padding:6px 8px">Remarks</th></tr></thead>
+      <tbody>${scope.map(r=>`<tr style="border-top:1px solid #eef2f7">
+        <td style="padding:5px 8px;color:#64748b;font-size:10.5px">${escapeHtml(r.block.replace(/\s*\(.*\)/,''))}</td>
+        <td style="padding:5px 8px;font-size:10.5px;color:#64748b">${escapeHtml(r.category||'—')}</td>
+        <td style="padding:5px 8px;font-weight:600;color:#1e293b">${escapeHtml(r.area)}</td>
+        ${D.map(d=>`<td style="padding:5px 6px;text-align:center">${cellPill(r[d.key])}</td>`).join('')}
+        <td style="padding:5px 8px;font-size:10.5px;color:${r.rem?'#b45309':'#d1d5db'}">${escapeHtml(r.rem||'—')}</td></tr>`).join('')}</tbody></table>`;
+    const legend = `<div style="padding:6px 10px;font-size:10.5px;color:#94a3b8"><span class="pill" style="background:#dcfce7;color:#16a34a">✓</span> Completed &nbsp;·&nbsp; <span class="pill" style="background:#fef3c7;color:#b45309">◑</span> In progress &nbsp;·&nbsp; <span class="pill" style="background:#fee2e2;color:#b91c1c">✗</span> Not started &nbsp;·&nbsp; <span class="pill" style="background:#f1f5f9;color:#94a3b8">NA</span> N/A &nbsp;·&nbsp; — not tracked</div>`;
+    const tableBlock = `<div class="tbl-wrap" style="border-color:#e2e8f0;margin-top:2px"><div class="tbl-head" style="background:#f8fafc;border-bottom:1px solid #e2e8f0"><span>🅿️</span><span class="tbl-title" style="color:#1e3a5f">Basement Work Status — ${escapeHtml(activeBasementBlock==='all'?'All Basements':activeBasementBlock)}</span><span class="tbl-count" style="background:#1e3a5f">${scope.length} areas</span></div><div style="overflow-x:auto">${tableHtml}</div>${legend}
+      <div style="padding:2px 10px 8px;font-size:11px;color:#94a3b8">Source: <a href="https://docs.google.com/spreadsheets/d/${escapeHtml(FILES.basements)}/edit" target="_blank" style="color:#1d4ed8;text-decoration:none">Basement Work Status Tracker</a> · % = Completed ÷ (tracked areas, excl. N/A).</div></div>`;
+    container.innerHTML = `<div class="eyebrow">${sub.icon} ${escapeHtml(sub.label)} <span class="tag live">LIVE</span></div>${subnav}${blockRow}${discSummary}${tableBlock}`;
     wire();
   } catch (e) {
     container.innerHTML = `<div class="eyebrow">${sub.icon} ${escapeHtml(sub.label)}</div>${subnav}<div class="error"><strong>Couldn't load Basements.</strong> ${escapeHtml(e.message || String(e))}</div>`;
