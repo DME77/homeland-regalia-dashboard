@@ -697,15 +697,15 @@ const SHEET_TABS = {
   // Interior Execution — all contractor tabs
   '15WH66qd3e04ojvDhg7DQiWVDOLa9oDvo8LQDpJtQL_U': [
     { gid: 1807783502, name: 'TOWER 3 - VD ASS (1ST-5TH)' },
-    { gid: 2053692891, name: 'TOWER 3 - SHZ (9TH-13TH)' },
     { gid: 10063988,   name: 'YUKTI T03 (14TH-16TH)' },
     { gid: 116667127,  name: 'T03 17TH-18TH WORTH SOUL' },
     { gid: 187376399,  name: 'TOP TO BOTTOM T04' },
     { gid: 1128186007, name: 'T05-INEXPLUS' },
     { gid: 1299954594, name: 'DESWAL T05' },
     { gid: 351949425,  name: 'SYSTILE/PRAJAPATI T06' },
-    { gid: 257629090,  name: 'T06_SHZ' },
     { gid: 306925946,  name: 'TOP TO BOTTOM T06' },
+    // Removed on request: 'TOWER 3 - SHZ (9TH-13TH)' (gid 2053692891) and 'T06_SHZ' (gid 257629090)
+    // → these produced the "SHDZ · T3 F9-F13" (15 rows) and "SHZ · T6 F2-F3" (2 rows) contractor cards.
   ],
   // Glass Railing — all 6 tower tabs
   '1-CuQg-27_d36PsSRs5PMkBlVm6qdPXDNSS3P1nAmoPc': [
@@ -4132,6 +4132,79 @@ function subnavHtml(items, active, getMeta) {
     </button>`;
   }).join('')}</div>`;
 }
+// ─── Interior Contractor MOM (Minutes of Meeting) — saved in this browser ───
+const INTERIOR_CONTRACTORS = ['VD Associates','SHDZ','Yukti','Worth Soul','T2B','Inexplus','Deswal','Systile/Prajapati','SHZ'];
+function _momStore(){ try { return JSON.parse(localStorage.getItem('hlr_interior_mom') || '{}'); } catch { return {}; } }
+function _momSave(s){ try { localStorage.setItem('hlr_interior_mom', JSON.stringify(s)); return true; } catch(e){ alert('Could not save — browser storage is full. Try removing the attachment or using a smaller file.'); return false; } }
+function _momFmtDate(d){ if(!d) return ''; const x=new Date(d); return isNaN(x)? d : x.toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'}); }
+function openInteriorMom(preContractor){
+  document.getElementById('mom-overlay')?.remove();
+  const ov=document.createElement('div'); ov.id='mom-overlay';
+  ov.style.cssText='position:fixed;inset:0;background:rgba(15,23,42,0.55);z-index:9999;display:flex;align-items:flex-start;justify-content:center;overflow:auto;padding:28px 14px';
+  const list=INTERIOR_CONTRACTORS.slice(); if(preContractor && !list.includes(preContractor)) list.unshift(preContractor);
+  ov.innerHTML=`<div style="background:#fff;border-radius:14px;max-width:640px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,.3);overflow:hidden">
+    <div style="background:#1e3a5f;color:#fff;padding:14px 18px;display:flex;justify-content:space-between;align-items:center">
+      <div style="font-weight:700;font-size:15px">📝 Interior — Contractor Meeting / MOM</div>
+      <button id="mom-x" style="background:transparent;border:0;color:#fff;font-size:22px;cursor:pointer;line-height:1">×</button></div>
+    <div style="padding:16px 18px">
+      <label style="font-size:11px;font-weight:700;color:#64748b">CONTRACTOR</label>
+      <input id="mom-c" list="mom-cl" value="${escapeHtml(preContractor||'')}" placeholder="Select or type a contractor" style="width:100%;padding:8px 10px;border:1px solid #cbd5e1;border-radius:8px;margin:4px 0 12px;font-size:13px">
+      <datalist id="mom-cl">${list.map(c=>`<option value="${escapeHtml(c)}">`).join('')}</datalist>
+      <div id="mom-last"></div>
+      <div style="border-top:1px dashed #e2e8f0;margin:12px 0;padding-top:10px;font-weight:700;font-size:12px;color:#1e3a5f">➕ New meeting entry</div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <div style="flex:1;min-width:150px"><label style="font-size:11px;font-weight:700;color:#64748b">MEETING DATE</label><input id="mom-date" type="date" style="width:100%;padding:7px 9px;border:1px solid #cbd5e1;border-radius:8px;margin-top:4px;font-size:13px"></div>
+        <div style="flex:1;min-width:150px"><label style="font-size:11px;font-weight:700;color:#64748b">ATTENDEES</label><input id="mom-att" placeholder="Names" style="width:100%;padding:7px 9px;border:1px solid #cbd5e1;border-radius:8px;margin-top:4px;font-size:13px"></div>
+      </div>
+      <label style="font-size:11px;font-weight:700;color:#64748b;display:block;margin-top:10px">LAST MEETING DISCUSSIONS</label>
+      <textarea id="mom-disc" rows="3" style="width:100%;padding:8px 10px;border:1px solid #cbd5e1;border-radius:8px;margin-top:4px;font-size:13px;font-family:inherit"></textarea>
+      <label style="font-size:11px;font-weight:700;color:#64748b;display:block;margin-top:10px">MOM / DECISIONS</label>
+      <textarea id="mom-mom" rows="3" style="width:100%;padding:8px 10px;border:1px solid #cbd5e1;border-radius:8px;margin-top:4px;font-size:13px;font-family:inherit"></textarea>
+      <label style="font-size:11px;font-weight:700;color:#64748b;display:block;margin-top:10px">TARGETS / ACTION ITEMS</label>
+      <textarea id="mom-tgt" rows="3" style="width:100%;padding:8px 10px;border:1px solid #cbd5e1;border-radius:8px;margin-top:4px;font-size:13px;font-family:inherit"></textarea>
+      <label style="font-size:11px;font-weight:700;color:#64748b;display:block;margin-top:10px">ATTACH MOM FILE — optional (&lt; 2 MB)</label>
+      <input id="mom-file" type="file" style="margin-top:4px;font-size:12px">
+      <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px">
+        <button id="mom-cancel" style="padding:8px 16px;border:1px solid #cbd5e1;background:#fff;border-radius:8px;cursor:pointer;font-weight:600">Close</button>
+        <button id="mom-save" style="padding:8px 18px;border:0;background:#1e3a5f;color:#fff;border-radius:8px;cursor:pointer;font-weight:700">Save meeting</button>
+      </div>
+      <div style="font-size:10.5px;color:#94a3b8;margin-top:8px">Saved in this browser (localStorage). Ask me to wire a shared Google-Sheet backend when you want it visible to the whole team / across devices.</div>
+    </div></div>`;
+  document.body.appendChild(ov);
+  const close=()=>ov.remove();
+  ov.addEventListener('click',e=>{ if(e.target===ov) close(); });
+  ov.querySelector('#mom-x').onclick=close; ov.querySelector('#mom-cancel').onclick=close;
+  const cIn=ov.querySelector('#mom-c'), lastEl=ov.querySelector('#mom-last');
+  const renderLast=()=>{ const c=cIn.value.trim(); const arr=(_momStore()[c]||[]);
+    if(!c){ lastEl.innerHTML=''; return; }
+    if(!arr.length){ lastEl.innerHTML=`<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:10px 12px;font-size:12px;color:#94a3b8">No previous MOM saved for <b>${escapeHtml(c)}</b> yet.</div>`; return; }
+    const m=arr[0];
+    lastEl.innerHTML=`<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:10px 12px;font-size:12px;color:#1e293b">
+      <div style="font-weight:700;color:#1d4ed8;margin-bottom:4px">🕑 Last meeting — ${escapeHtml(_momFmtDate(m.date)||m.savedAt||'')}</div>
+      ${m.attendees?`<div><b>Attendees:</b> ${escapeHtml(m.attendees)}</div>`:''}
+      ${m.discussions?`<div style="margin-top:3px;white-space:pre-wrap"><b>Discussions:</b> ${escapeHtml(m.discussions)}</div>`:''}
+      ${m.mom?`<div style="margin-top:3px;white-space:pre-wrap"><b>MOM:</b> ${escapeHtml(m.mom)}</div>`:''}
+      ${m.targets?`<div style="margin-top:3px;white-space:pre-wrap"><b>Targets:</b> ${escapeHtml(m.targets)}</div>`:''}
+      ${m.file&&m.file.dataUrl?`<div style="margin-top:5px"><a href="${m.file.dataUrl}" download="${escapeHtml(m.file.name)}" style="color:#1d4ed8;text-decoration:none">📎 ${escapeHtml(m.file.name)}</a></div>`:''}
+      ${arr.length>1?`<div style="margin-top:6px;color:#64748b">+ ${arr.length-1} earlier meeting(s) saved for this contractor</div>`:''}
+    </div>`; };
+  cIn.addEventListener('input',renderLast); renderLast();
+  ov.querySelector('#mom-date').value=new Date().toISOString().slice(0,10);
+  ov.querySelector('#mom-save').onclick=async()=>{
+    const c=cIn.value.trim(); if(!c){ alert('Enter a contractor name first.'); return; }
+    const entry={ date:ov.querySelector('#mom-date').value, attendees:ov.querySelector('#mom-att').value.trim(),
+      discussions:ov.querySelector('#mom-disc').value.trim(), mom:ov.querySelector('#mom-mom').value.trim(),
+      targets:ov.querySelector('#mom-tgt').value.trim(), savedAt:new Date().toLocaleString('en-IN') };
+    const f=ov.querySelector('#mom-file').files[0];
+    if(f){ if(f.size>2*1024*1024){ alert('File is larger than 2 MB. Save without it or attach a smaller file.'); return; }
+      entry.file={ name:f.name, dataUrl: await new Promise(res=>{ const fr=new FileReader(); fr.onload=()=>res(fr.result); fr.readAsDataURL(f); }) }; }
+    const store=_momStore(); (store[c]=store[c]||[]).unshift(entry);
+    if(!_momSave(store)) return;
+    renderLast();
+    ['mom-att','mom-disc','mom-mom','mom-tgt'].forEach(id=>ov.querySelector('#'+id).value=''); ov.querySelector('#mom-file').value='';
+    const btn=ov.querySelector('#mom-save'); btn.textContent='✓ Saved'; btn.style.background='#16a34a'; setTimeout(()=>{ btn.textContent='Save meeting'; btn.style.background='#1e3a5f'; },1500);
+  };
+}
 async function renderWork() {
   // Persist nav state so browser refresh restores the same view (sessionStorage = per-tab only)
   sessionStorage.setItem('activeWorkSub',      activeWorkSub);
@@ -4544,11 +4617,15 @@ async function renderWork() {
             <td style="text-align:center"><span class="pill" style="${pillStyles[r.status]}">${pillText[r.status]}</span></td>
             <td style="color:${r.remark?'#6b7280':'#d1d5db'};font-style:${r.remark?'normal':'italic'}">${escapeHtml(r.remark||'—')}</td>
           </tr>`).join('')}</tbody></table>${filtered.length>cap?`<div style="padding:10px 12px;font-size:11px;color:#94a3b8;text-align:center">Showing first ${cap} of ${filtered.length} — use filters to narrow</div>`:''}`;
+    const momBtn = sub.key === 'interior'
+      ? `<div style="margin:2px 0 6px"><button data-mom-open style="padding:8px 16px;border-radius:8px;border:1.5px solid #1e3a5f;background:#1e3a5f;color:#fff;font-size:12.5px;font-weight:700;cursor:pointer">📝 Last Meeting MOM</button></div>`
+      : '';
     container.innerHTML = `
       <div class="eyebrow">${sub.icon} ${escapeHtml(sub.label)}${breadcrumb} <span class="tag live">LIVE</span></div>
       ${subnav}
       ${liveBar('live', allItems.length, SOURCE_LABELS[sub.key]||'')}
       ${itemNav}
+      ${momBtn}
       ${baffleTypeNav}
       ${locationNav}
       ${sideNav}
@@ -4564,6 +4641,7 @@ async function renderWork() {
         </div>
         ${tableHtml}
       </div>`;
+    container.querySelectorAll('[data-mom-open]').forEach(b => b.addEventListener('click', () => openInteriorMom(activeWorkItem !== 'all' ? activeWorkItem : '')));
     container.querySelectorAll('.sub-btn[data-key]').forEach(b => {
       b.addEventListener('click', () => {
         activeWorkSub = b.dataset.key;
