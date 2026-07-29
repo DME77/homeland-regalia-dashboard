@@ -7537,12 +7537,27 @@ function doorStatusPill(st) {
   if (!found) return `<span style="color:#cbd5e1">—</span>`;
   return `<span class="pill" style="background:${found.activeBg};color:${found.c};font-size:10px">${escapeHtml(found.label)}</span>`;
 }
-// % of a tower's real (non-sample) flats that are Installed.
+// Status CARDS group the 5 granular statuses into the 4 buckets requested:
+// "Doors Installed", "Ordered / On site" (Ordered-in-a-lot + Delivered-to-site
+// combined — both mean an order has been given), "Not Assigned", "Hold".
+// The table's per-row pill still shows the granular status (Ordered vs
+// Delivered) for detail.
+const DOOR_CARD_GROUPS = [
+  { key:'installed',      label:'Doors Installed',   c:'#16a34a', activeBg:'#dcfce7', ring:'#86efac', match: st => st === 'installed' },
+  { key:'ordered-onsite', label:'Ordered / On site', c:'#b45309', activeBg:'#fffbeb', ring:'#fcd34d', match: st => st === 'ordered' || st === 'delivered' },
+  { key:'not-assigned',   label:'Not Assigned',      c:'#dc2626', activeBg:'#fee2e2', ring:'#fca5a5', match: st => st === 'not-assigned' },
+  { key:'hold',           label:'Hold',              c:'#7c3aed', activeBg:'#f3e8ff', ring:'#e9d5ff', match: st => st === 'hold' },
+];
+// Doors are counted by QUANTITY (each flat's Qty = number of doors for that
+// flat), not by flat count — a flat with Qty 9 contributes 9 doors, not 1.
+function doorQty(r) { return r.qty || 0; }
+// % of a tower's real (non-sample) door quantity that is Installed.
 function doorTowerPct(rows) {
   const real = rows.filter(r => doorFlatStatus(r) !== 'sample');
-  if (!real.length) return '—';
-  const done = real.filter(r => doorFlatStatus(r) === 'installed').length;
-  return Math.round(done / real.length * 100) + '% done';
+  const totalQty = real.reduce((a, r) => a + doorQty(r), 0);
+  if (!totalQty) return '—';
+  const doneQty = real.filter(r => doorFlatStatus(r) === 'installed').reduce((a, r) => a + doorQty(r), 0);
+  return Math.round(doneQty / totalQty * 100) + '% done';
 }
 // Parse one tower tab → [{flat, tower, floor, flatType, qty, lot, vendor, status, remark}]
 function parseDoors(csv, towerName) {
@@ -7597,19 +7612,31 @@ async function renderDoorsInto(host) {
     if (activeDoorsTower !== 'all' && !towerNames.includes(activeDoorsTower)) activeDoorsTower = 'all';
     const towerRows = activeDoorsTower === 'all' ? allRows : allRows.filter(r => r.tower === activeDoorsTower);
     const realRows = towerRows.filter(r => doorFlatStatus(r) !== 'sample');
-    const stCounts = { all: realRows.length };
-    DOOR_STATUSES.forEach(s => { stCounts[s.key] = 0; });
-    realRows.forEach(r => { const st = doorFlatStatus(r); stCounts[st] = (stCounts[st] || 0) + 1; });
-    if (activeDoorsStatus !== 'all' && !DOOR_STATUSES.some(s => s.key === activeDoorsStatus)) activeDoorsStatus = 'all';
-    let filtered = activeDoorsStatus === 'all' ? towerRows : realRows.filter(r => doorFlatStatus(r) === activeDoorsStatus);
+    // Cards are counted by door QUANTITY (sum of each flat's Qty), not flat count —
+    // e.g. a flat with Qty 9 is 9 doors "Installed"/"Ordered"/etc, not 1.
+    const qtyOf = rowsArr => rowsArr.reduce((a, r) => a + doorQty(r), 0);
+    const flatCountByGroup = {};
+    DOOR_CARD_GROUPS.forEach(g => { flatCountByGroup[g.key] = 0; });
+    const stCounts = { all: qtyOf(realRows) };
+    DOOR_CARD_GROUPS.forEach(g => { stCounts[g.key] = 0; });
+    realRows.forEach(r => {
+      const st = doorFlatStatus(r);
+      const grp = DOOR_CARD_GROUPS.find(g => g.match(st));
+      if (!grp) return;
+      stCounts[grp.key] = (stCounts[grp.key] || 0) + doorQty(r);
+      flatCountByGroup[grp.key] = (flatCountByGroup[grp.key] || 0) + 1;
+    });
+    if (activeDoorsStatus !== 'all' && !DOOR_CARD_GROUPS.some(g => g.key === activeDoorsStatus)) activeDoorsStatus = 'all';
+    const activeGroup = DOOR_CARD_GROUPS.find(g => g.key === activeDoorsStatus);
+    let filtered = activeDoorsStatus === 'all' ? towerRows : realRows.filter(r => activeGroup.match(doorFlatStatus(r)));
     // ── Cards ──
-    const towerCards = `<div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:0 0 4px 2px">📍 Tower</div><div class="cards" style="overflow-x:auto;flex-wrap:nowrap;padding-bottom:6px">
-      ${kwColorCard('tower','all','All Towers',allRows.length,activeDoorsTower==='all',{ c:'#1e3a5f', activeBg:'#e0e7ff', ring:'#c7d2fe' }, doorTowerPct(allRows))}
-      ${towerNames.map(t => { const tr = allRows.filter(r => r.tower === t); return kwColorCard('tower', t, t, tr.length, activeDoorsTower === t, { c:'#7c3aed', activeBg:'#f3e8ff', ring:'#e9d5ff' }, doorTowerPct(tr)); }).join('')}
+    const towerCards = `<div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:0 0 4px 2px">📍 Tower (door quantity)</div><div class="cards" style="overflow-x:auto;flex-wrap:nowrap;padding-bottom:6px">
+      ${kwColorCard('tower','all','All Towers',qtyOf(allRows.filter(r=>doorFlatStatus(r)!=='sample')),activeDoorsTower==='all',{ c:'#1e3a5f', activeBg:'#e0e7ff', ring:'#c7d2fe' }, doorTowerPct(allRows))}
+      ${towerNames.map(t => { const tr = allRows.filter(r => r.tower === t); return kwColorCard('tower', t, t, qtyOf(tr.filter(r=>doorFlatStatus(r)!=='sample')), activeDoorsTower === t, { c:'#7c3aed', activeBg:'#f3e8ff', ring:'#e9d5ff' }, doorTowerPct(tr)); }).join('')}
     </div>`;
-    const statusCards = `<div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:10px 0 4px 2px">🚪 Status</div><div class="cards" style="overflow-x:auto;flex-wrap:nowrap;padding-bottom:6px">
-      ${kwColorCard('status','all','All',stCounts.all,activeDoorsStatus==='all',{ c:'#1e3a5f', activeBg:'#e0e7ff', ring:'#c7d2fe' })}
-      ${DOOR_STATUSES.map(s => kwColorCard('status', s.key, s.label, stCounts[s.key]||0, activeDoorsStatus===s.key, s)).join('')}
+    const statusCards = `<div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:10px 0 4px 2px">🚪 Status — doors (Qty)</div><div class="cards" style="overflow-x:auto;flex-wrap:nowrap;padding-bottom:6px">
+      ${kwColorCard('status','all','Total Number of Doors',stCounts.all,activeDoorsStatus==='all',{ c:'#1e3a5f', activeBg:'#e0e7ff', ring:'#c7d2fe' }, `${realRows.length} flats`)}
+      ${DOOR_CARD_GROUPS.map(g => kwColorCard('status', g.key, g.label, stCounts[g.key]||0, activeDoorsStatus===g.key, g, `${flatCountByGroup[g.key]||0} flats`)).join('')}
     </div>`;
     // ── Table ──
     const hasRemark = filtered.some(r => r.remark);
@@ -7634,7 +7661,7 @@ async function renderDoorsInto(host) {
         </table>`;
     const scopeParts = [];
     if (activeDoorsTower !== 'all')  scopeParts.push(activeDoorsTower);
-    if (activeDoorsStatus !== 'all') scopeParts.push((DOOR_STATUSES.find(s=>s.key===activeDoorsStatus)||{}).label);
+    if (activeDoorsStatus !== 'all') scopeParts.push((DOOR_CARD_GROUPS.find(g=>g.key===activeDoorsStatus)||{}).label);
     const scopeLabel = scopeParts.length === 0 ? 'All flats' : scopeParts.join(' · ');
     host.innerHTML = `
       ${liveBar('live', allRows.length, 'GREENLAM DOOR.xlsx')}
