@@ -324,7 +324,7 @@ const FILES = {
   basements: '1VtvUPnqEMm68VYv9CSbpKSJodS5gRU-yme90DbqLeAk',
   kitchenWardrobe: '11MghP-8uexAw292CoYSSKNoZswP1vpzgPNk8_huGrh4',
   vanity: '1lVaxVDsvSwkCPeD4Fzc2lCvrHYGgQB_IjiNGJyEdRxA',
-  doors: '1M7jIV1lz4lLtujr7Itz1AiSKuiZIKDA-7Y331lYo9LA',
+  doors: '1FzeWySFOI0rwpEFDMFh9lxH1nmwkgqd0suHBLRSWH9w',
   handover: '1yQRAo6GFkubQOAMAcxTyajthH6WyyybAagPDYgSELUg',
   mechanical: '1vWRTD7HKtdcBDD_SbAaaQNgHZvlLoWxBMIA3A66FwrI',
   sampleFlats: '1rLsyzas_xBXI6jr3SyeZrY-W2NfYvsQHF6Cwt4tVdEc',
@@ -508,9 +508,8 @@ let activeVanityColumn = 'all';        // 'all' | a report column key (see VANIT
 let activeVanityStatus = 'all';        // 'all' | 'done' | 'pending' | 'na' | 'hold'
 
 // Doors sub-tab (Purchasable Items)
-let activeDoorsTower  = 'all';         // 'all' | 'TOWER-01' | …
-let activeDoorsColumn = 'all';         // 'all' | a report column key (see DOOR_COLS)
-let activeDoorsStatus = 'all';         // 'all' | 'done' | 'pending' | 'na' | 'hold'
+let activeDoorsTower  = 'all';         // 'all' | 'T-1' | …
+let activeDoorsStatus = 'all';         // 'all' | installed | delivered | ordered | not-assigned | hold
 
 // Tile Cladding sub-tab (Facade)
 let activeTileTower = 'all';           // 'all' | 'Tower 1' | …
@@ -686,13 +685,16 @@ const SHEET_TABS = {
     { gid: 1354406150, name: 'Tower 6' },
   ],
   // Greenlam Doors — per-flat door pipeline, one tab per tower
-  '1M7jIV1lz4lLtujr7Itz1AiSKuiZIKDA-7Y331lYo9LA': [
-    { gid: 546508471,  name: 'TOWER-01' },
-    { gid: 1949419296, name: 'TOWER-02' },
-    { gid: 0,          name: 'TOWER-03' },
-    { gid: 248172457,  name: 'TOWER-04' },
-    { gid: 1713424421, name: 'TOWER-05' },
-    { gid: 1802446270, name: 'TOWER-06' },
+  // GREENLAM DOOR — lot-wise order tracker, one tab per tower (T-1…T-6).
+  // MASTER SHEET / Hold & Not-Assigned / STILT-LOBBY / LOT-10 are aggregate or
+  // planning tabs (different layouts) — intentionally excluded from live pull.
+  '1FzeWySFOI0rwpEFDMFh9lxH1nmwkgqd0suHBLRSWH9w': [
+    { gid: 1155975493, name: 'T-1' },
+    { gid: 2131759176, name: 'T-2' },
+    { gid: 1233089393, name: 'T-3' },
+    { gid: 733641570,  name: 'T-4' },
+    { gid: 737208468,  name: 'T-5' },
+    { gid: 1231043306, name: 'T-6' },
   ],
   // Interior Execution — all contractor tabs
   '15WH66qd3e04ojvDhg7DQiWVDOLa9oDvo8LQDpJtQL_U': [
@@ -1334,7 +1336,7 @@ async function loadSpandrelGlazing(fileId) {
 
 function parseGRCTabCsv(csv, towerLabel) {
   if (!csv || csv.trim().length < 30) return [];
-  // ── CSV → 2D rows ──────────────────────────────────────────
+  // ── CSV → 2D rows (embedded newlines inside quoted multi-line cells are kept) ──
   const rows = [];
   let cur = [], field = '', inQ = false;
   for (let i = 0; i <= csv.length; i++) {
@@ -1363,76 +1365,104 @@ function parseGRCTabCsv(csv, towerLabel) {
     if (h.some(c => /FLOOR/.test(c)) && h.some(c => c.includes('GRC'))) { hIdx = i; break; }
   }
   if (hIdx < 0) return [];
-  const H = rows[hIdx].map(c => (c||'').toUpperCase().trim());
+  const Hraw = rows[hIdx];
+  const H = Hraw.map(c => (c||'').toUpperCase().replace(/\s+/g,' ').trim());
 
-  // ── Column indices ──────────────────────────────────────────
-  const iContractor = H.findIndex(h => h.includes('CONTRACT'));
-  const iMesh    = H.findIndex(h => h.includes('GRC') && h.includes('MESH'));
-  const iFinal   = H.findIndex(h => h.includes('GRC') && (h.includes('FINAL') || h.includes('CHECK')));
-  const iPlaster = H.findIndex(h => h.includes('GRC') && h.includes('PLASTER'));
-
-  // Sub-header row: area names can sit ABOVE the header (some towers) or BELOW it (T6).
-  // Detect T6 pattern: row after header has meaningful text in GRC columns (not TRUE/FALSE/floor).
   const rowAbove = hIdx > 0 ? rows[hIdx - 1].map(c => (c||'').trim()) : [];
   const rowBelow = hIdx + 1 < rows.length ? rows[hIdx + 1].map(c => (c||'').trim()) : [];
   const belowHasAreas = rowBelow.some((v, k) =>
     H[k] && H[k].includes('GRC') && v && v.length > 3 &&
     !/^(TRUE|FALSE)$/i.test(v) && !/\d+\s*(ST|ND|RD|TH)?\s*FLOOR/i.test(v)
   );
-  const subHeaderRow = belowHasAreas ? rowBelow : rowAbove;
-  // When area names row is below the header, skip it when iterating floor data
   const dataStartIdx = belowHasAreas ? hIdx + 2 : hIdx + 1;
 
-  // Helper: clean a raw cell string into a display-friendly area name
-  function cleanAreaName(raw) {
-    return raw
+  const iContractor = H.findIndex(h => h.includes('CONTRACT'));
+  const iFloor       = H.findIndex(h => h.includes('FLOOR'));
+  const iSide0        = H.findIndex(h => h === 'SIDE');
+
+  // ── Shared/global trailing columns (Plaster-front-side, Mesh, Final Checking) —
+  //    these apply once per floor, not per shaft, so they're excluded from the
+  //    per-shaft category breakdown and only used as trailing-column detection.
+  const sharedIdxs = new Set();
+  for (let k = H.length - 1; k > iFloor; k--) {
+    const h = H[k];
+    if (!h) continue;
+    const isMesh  = h.includes('MESH');
+    const isFinal = h.includes('FINAL') && h.includes('CHECK');
+    const isGlobalPlaster = h.includes('PLASTER') && (h.includes('WORK') || h.includes('FRONT'));
+    if (isMesh || isFinal || isGlobalPlaster) { sharedIdxs.add(k); continue; }
+    break; // shared columns are always the trailing run — stop at first non-match
+  }
+
+  // ── Classify each remaining column into a shaft-work role ──
+  function roleOf(h) {
+    if (!h) return null;
+    if (h.includes('FINISH'))                          return 'finish';
+    if (h.includes('MATERIAL'))                         return 'material';
+    if (h.includes('INSTALL'))                          return 'install';
+    if (h.includes('MS WORK') || h.includes('MSWORK'))  return 'ms';
+    if (h.includes('PLASTER'))                          return 'plaster';
+    if (h.includes('PAINT'))                             return 'paint';
+    return null;
+  }
+
+  // ── Group columns into shaft blocks: a block ends (and a new one begins)
+  //    whenever a role repeats — this works regardless of column order, which
+  //    varies tower to tower (e.g. T5 puts "GRC Installation" last, T6's last
+  //    shaft puts "Plaster" before "Paint").
+  const blocks = [];
+  let curBlock = null;
+  for (let k = 0; k < H.length; k++) {
+    if (sharedIdxs.has(k) || k === iContractor || k === iFloor || k === iSide0) continue;
+    const role = roleOf(H[k]);
+    if (!role) continue;
+    if (!curBlock) curBlock = {};
+    if (curBlock[role] != null) { blocks.push(curBlock); curBlock = {}; }
+    curBlock[role] = k;
+  }
+  if (curBlock && (curBlock.ms != null || curBlock.install != null || curBlock.material != null || curBlock.finish != null)) blocks.push(curBlock);
+
+  // ── Derive a human shaft/side name for each block ──
+  function cleanName(raw) {
+    return (raw || '')
       .replace(/([a-z])([A-Z])/g, '$1 $2')  // split camelCase (e.g. KothiSideStaircase)
+      .replace(/\n/g, ' ')
+      .replace(/GRC\s*INSTALLATION/gi, '')
+      .replace(/GRC\s*MATERIAL(\s*ON)?\s*SITE/gi, '')
+      .replace(/FINISHING\s*OF\s*GRC/gi, '')
+      .replace(/MS\s*WORK/gi, '')
+      .replace(/PLASTER(\s*WORK)?(\s*FRONT\s*SIDE)?/gi, '')
+      .replace(/\bPAINT\b/gi, '')
+      .replace(/\bGRC\b/gi, '')
+      .replace(/\bAREA\b/gi, '')
       .replace(/[\-\/]+/g, ' ')
       .replace(/\s+/g, ' ')
       .trim();
   }
-
-  // Helper: derive a human-readable side/area name from header text + sub-header fallback
-  function extractSide(headerText, colIdx, fallbackIdx) {
-    // 1. Try to pull area name from the column header itself (T1-T5 pattern)
-    //    e.g. "GRC INSTALLATION - OVAL CAFE SIDE SHAFT" → "Oval Cafe Side Shaft"
-    let s = headerText
-      .replace(/GRC\s*INSTALLATION/g, '')
-      .replace(/^GRC\s*/g, '')
-      .replace(/[\-\/]+/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim();
-    if (s) s = s.replace(/\w+/g, w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase());
-
-    // 2. If header gave nothing (standalone "GRC"), scan the sub-header row leftward from colIdx.
-    //    T6 uses merged cells so the area name sits in the LEFTMOST cell of the merge;
-    //    the actual GRC checkbox column is often one or more cells to the right (empty in sub-header).
-    if (!s && subHeaderRow.length > 0) {
-      for (let j = colIdx; j >= 0; j--) {
-        const v = (subHeaderRow[j] || '').trim();
-        if (v.length > 2 && !/^(AREA\s*NAMES?|S\.?\s*NO\.?|FLOOR|CONTRACT|TOWER|HOMELAND)/i.test(v)) {
-          s = cleanAreaName(v);
-          break;
-        }
+  const roleOrder = ['paint','ms','install','plaster','finish','material'];
+  let fallbackN = 0;
+  blocks.forEach(b => {
+    let best = '';
+    roleOrder.forEach(r => {
+      if (b[r] == null) return;
+      const c = cleanName(Hraw[b[r]]);
+      if (c.length > best.length) best = c;
+    });
+    // Fallback: scan the row above (merged title row) leftward from the block's first column
+    if (!best) {
+      const firstIdx = Math.min(...Object.values(b));
+      for (let j = firstIdx; j >= 0; j--) {
+        const v = (rowAbove[j] || '').trim();
+        if (v.length > 2 && !/^(AREA\s*NAMES?|S\.?\s*NO\.?|FLOOR|CONTRACT|TOWER|HOMELAND)/i.test(v)) { best = cleanName(v); break; }
       }
     }
+    if (!best) best = `Shaft ${++fallbackN}`;
+    b.side = best.replace(/\w+/g, w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase());
+  });
 
-    if (!s) s = `Area ${fallbackIdx + 1}`;
-    return s;
-  }
+  if (blocks.length === 0) return [];
 
-  // ── Build grcCols: one entry per GRC Installation column ───
-  let fallbackN = 0;
-  const grcCols = H.reduce((acc, h, k) => {
-    if (!h.includes('GRC')) return acc;
-    if (k === iMesh || k === iFinal || k === iPlaster) return acc;
-    acc.push({ idx: k, side: extractSide(h, k, fallbackN++) });
-    return acc;
-  }, []);
-
-  if (grcCols.length === 0) return [];
-
-  // ── Group rows by floor ─────────────────────────────────────
+  // ── Group data rows by floor ─────────────────────────────────
   const floorGroups = [];
   let cur2 = null;
   for (let i = dataStartIdx; i < rows.length; i++) {
@@ -1448,25 +1478,46 @@ function parseGRCTabCsv(csv, towerLabel) {
   }
   if (cur2) floorGroups.push(cur2);
 
-  // ── Build items: one per floor per GRC Installation column ──
+  // ── Build items: one per floor per shaft, each with a per-category breakdown
+  //    (MS Work, GRC Installation, GRC Material on Site, Finishing of GRC —
+  //    plus Plaster where the sheet tracks it per-shaft, e.g. Tower 6). ──
+  function cellStat(val) {
+    const v = (val || '').trim().toUpperCase();
+    if (v === 'TRUE') return 'done';
+    if (v === '' || v === 'FALSE') return 'pending';
+    return 'delay'; // note / date / other non-boolean value
+  }
+  const STAGE_LABEL = { plaster: 'Plaster', ms: 'MS Work', install: 'GRC Installation', material: 'GRC Material on Site', finish: 'Finishing of GRC' };
+  const STAGE_ORDER = ['plaster','ms','install','material','finish'];
+
   const items = [];
   for (const g of floorGroups) {
-    for (const col of grcCols) {
-      const colVals = g.rows.map(r => (r[col.idx]||'').toUpperCase().trim());
-      const isDone  = colVals.some(v => v === 'TRUE');
-      const hasNote = colVals.find(v => v && v !== 'TRUE' && v !== 'FALSE');
-      let status, remark;
-      if (isDone)        { status = 'done';    remark = ''; }
-      else if (hasNote)  { status = 'delay';   remark = hasNote; }
-      else               { status = 'pending'; remark = ''; }
+    for (const b of blocks) {
+      const breakdown = [];
+      STAGE_ORDER.forEach(role => {
+        const colIdx = b[role];
+        if (colIdx == null) return;
+        const vals = g.rows.map(r => (r[colIdx]||'').trim());
+        const val  = vals.find(v => v) || (vals.length ? vals[0] : '');
+        breakdown.push({ shortName: STAGE_LABEL[role], status: cellStat(val), raw: val });
+      });
+      if (breakdown.length === 0) continue;
+      const doneCount  = breakdown.filter(s => s.status === 'done').length;
+      const delayCount = breakdown.filter(s => s.status === 'delay').length;
+      let status;
+      if (doneCount === breakdown.length)           status = 'done';
+      else if (doneCount === 0 && delayCount === 0) status = 'pending';
+      else                                           status = 'delay';
+      const remark = breakdown.filter(s => s.status === 'delay').map(s => `${s.shortName}: ${s.raw}`).join('; ');
       items.push({
         contractor: g.contractor || 'GRC',
         tower:  towerLabel,
-        side:   col.side,
+        side:   b.side,
         label:  `${towerLabel} – ${g.label}`,
-        done:   isDone ? 1 : 0, total: 1, status, remark,
-        stageNames: ['GRC Install'],
-        states: [isDone ? 'TRUE' : (hasNote || 'FALSE')],
+        done: doneCount, total: breakdown.length, status, remark,
+        stageNames: breakdown.map(s => s.shortName),
+        states: breakdown.map(s => s.status === 'done' ? 'TRUE' : (s.status === 'delay' ? s.raw : 'FALSE')),
+        stageBreakdown: breakdown,
       });
     }
   }
@@ -4502,6 +4553,43 @@ async function renderWork() {
         }).join('')}
       </div>`;
     }
+    // ── GRC floor-wise matrix — every tracked floor for the selected shaft, with a
+    //    ✓/◑/✗ pill per category (MS Work / GRC Installation / Material / Finish).
+    //    Shown regardless of the status-card filter so no floor is ever hidden by it,
+    //    and flags any floor numbers missing from the source sheet (e.g. Tower 6 has
+    //    no "Floor 6" row — it jumps 5 → 7 in the sheet itself).
+    let grcFloorMatrixHtml = '';
+    if (sub.key === 'facade' && activeWorkItem === 'GRC' && activeWorkSide !== 'all' && items.some(r => r.stageBreakdown)) {
+      const floorNum = lbl => { const m = /(\d+)\s*Floor/i.exec(lbl || ''); return m ? parseInt(m[1], 10) : 9999; };
+      const sorted = items.slice().sort((a, b) => floorNum(a.label) - floorNum(b.label));
+      const catNames = [];
+      sorted.forEach(r => (r.stageNames || []).forEach(n => { if (!catNames.includes(n)) catNames.push(n); }));
+      const pillFor = st => st === 'done'
+        ? '<span style="color:#16a34a;font-weight:800">✓</span>'
+        : st === 'delay'
+          ? '<span style="color:#b45309;font-weight:800">◑</span>'
+          : '<span style="color:#cbd5e1;font-weight:800">✗</span>';
+      const nums = sorted.map(r => floorNum(r.label)).filter(n => n < 9999);
+      const maxFloor = nums.length ? Math.max(...nums) : 0;
+      const missing = [];
+      for (let n = nums.length ? Math.min(...nums) : 1; n <= maxFloor; n++) { if (!nums.includes(n)) missing.push(n); }
+      grcFloorMatrixHtml = `<div style="margin-bottom:16px">
+        <div style="font-size:10px;font-weight:700;color:#94a3b8;letter-spacing:1.5px;text-transform:uppercase;margin-bottom:8px">🏢 Floor-wise — ${escapeHtml(activeWorkSide)} (${sorted.length}${maxFloor ? ` of ${maxFloor}` : ''} floors tracked)</div>
+        ${missing.length ? `<div style="font-size:11px;color:#b45309;background:#fffbeb;border:1px solid #fcd34d;border-radius:8px;padding:6px 10px;margin-bottom:8px">⚠️ Floor${missing.length>1?'s':''} ${missing.join(', ')} ${missing.length>1?'have':'has'} no row in the source sheet for this tower — not a dashboard issue, the tab itself skips ${missing.length>1?'them':'it'}.</div>` : ''}
+        <div class="tbl-wrap" style="border-color:var(--card-border)">
+          <table><thead><tr><th>Floor</th>${catNames.map(n => `<th style="text-align:center">${escapeHtml(n)}</th>`).join('')}<th>Remark</th></tr></thead>
+          <tbody>${sorted.map(r => {
+            const m = /(\d+\s*Floor)/i.exec(r.label);
+            const floorLabel = m ? m[1] : r.label;
+            return `<tr><td style="font-weight:700;color:#1e3a5f">${escapeHtml(floorLabel)}</td>${catNames.map(n => {
+              const idx = (r.stageNames || []).indexOf(n);
+              const st = idx >= 0 && r.stageBreakdown ? r.stageBreakdown[idx].status : null;
+              return `<td style="text-align:center">${st ? pillFor(st) : '<span style="color:#e2e8f0">—</span>'}</td>`;
+            }).join('')}<td style="color:${r.remark?'#6b7280':'#d1d5db'};font-style:${r.remark?'normal':'italic'}">${escapeHtml(r.remark || '—')}</td></tr>`;
+          }).join('')}</tbody></table>
+        </div>
+      </div>`;
+    }
     // ── Interior stage summary cards (shown when a specific contractor is selected) ──
     let interiorStageSummaryHtml = '';
     if (sub.key === 'interior' && activeWorkItem !== 'all' && items.length > 0) {
@@ -4631,6 +4719,7 @@ async function renderWork() {
       ${sideNav}
       ${glassStageNav}
       ${stagePctSummaryHtml}
+      ${grcFloorMatrixHtml}
       ${interiorStageSummaryHtml}
       ${isSqftMode ? '' : statusCardsHtml(statusTabsForSub, counts, activeWorkStatus)}
       <div class="tbl-wrap" style="border-color:${tab.border}">
@@ -7419,80 +7508,74 @@ async function renderVanityInto(host) {
   }
 }
 // ─── DOORS (Greenlam) ─────────────────────────────────────
-// Per-flat door pipeline, one tab per tower. Tower layouts differ (flat ID sits
-// in different columns; T3 uses bare unit numbers; "done" appears as TRUE or
-// DONE), so columns + the flat column are located by header name.
-const DOOR_COLS = [
-  { key:'frame',     label:'Frame Measurement', match:/door\s*frame\s*measurement/i },
-  { key:'delivered', label:'Door Delivered',    match:/door\s*delivered/i },
-  { key:'install',   label:'Door Installation', match:/door\s*installation/i },
+// Lot-wise order tracker, one tab per tower (T-1…T-6). Each row is one flat's
+// door: Floor, Unit No., Flat Type, Qty, Lot No. (which production lot it's
+// assigned to — blank = not yet assigned), Vendor, Status (blank = ordered/in
+// production once a Lot is assigned, "Delivered" = material at site,
+// "Installed" = done), Remarks. Sample-flat / Site-office rows are shown but
+// excluded from the tower % and status counts (they aren't real client flats).
+function doorFlatStatus(row) {
+  const type = (row.flatType || '').toUpperCase();
+  if (/SAMPLE|SITE\s*OFFICE/.test(type)) return 'sample';
+  if (/HOLD/.test(type))                 return 'hold';
+  const s = (row.status || '').trim().toUpperCase();
+  if (s === 'INSTALLED') return 'installed';
+  if (s === 'DELIVERED') return 'delivered';
+  if (!row.lot || /MOCK/i.test(row.lot)) return 'not-assigned';
+  return 'ordered'; // has a Lot No. but no Delivered/Installed status yet
+}
+const DOOR_STATUSES = [
+  { key:'installed',     label:'Installed',        c:'#16a34a', activeBg:'#dcfce7', ring:'#86efac' },
+  { key:'delivered',     label:'Delivered',        c:'#0e7490', activeBg:'#cffafe', ring:'#a5f3fc' },
+  { key:'ordered',       label:'Ordered / In Lot',  c:'#b45309', activeBg:'#fffbeb', ring:'#fcd34d' },
+  { key:'not-assigned',  label:'Not Assigned',     c:'#dc2626', activeBg:'#fee2e2', ring:'#fca5a5' },
+  { key:'hold',          label:'Hold',             c:'#7c3aed', activeBg:'#f3e8ff', ring:'#e9d5ff' },
 ];
-function doorCellStatus(v) {
-  const s = String(v || '').trim().toUpperCase();
-  if (!s)                         return 'blank';
-  if (/HOLD/.test(s))             return 'hold';
-  if (s === 'TRUE' || s === 'DONE') return 'done';
-  if (s === 'NA' || s === 'N/A')  return 'na';
-  return 'pending';   // FALSE, "TO BE ORDRED", etc
+function doorStatusPill(st) {
+  const found = DOOR_STATUSES.find(s => s.key === st);
+  if (st === 'sample') return `<span class="pill" style="background:#f1f5f9;color:#94a3b8;font-size:9px">Sample/Office</span>`;
+  if (!found) return `<span style="color:#cbd5e1">—</span>`;
+  return `<span class="pill" style="background:${found.activeBg};color:${found.c};font-size:10px">${escapeHtml(found.label)}</span>`;
 }
-function doorPill(v) {
-  const t = (v || '').trim();
-  if (!t) return `<span style="color:#cbd5e1">—</span>`;
-  const st = doorCellStatus(v);
-  if (st === 'done')    return `<span class="pill" style="background:#dcfce7;color:#16a34a">✓</span>`;
-  if (st === 'na')      return `<span class="pill" style="background:#f1f5f9;color:#64748b;font-size:9px">NA</span>`;
-  if (st === 'hold')    return `<span class="pill" style="background:#fee2e2;color:#dc2626;font-size:9px">HOLD</span>`;
-  if (/^false$/i.test(t)) return `<span class="pill" style="background:#f1f5f9;color:#94a3b8">✗</span>`;
-  return `<span class="pill" style="background:#fef3c7;color:#b45309;font-size:9px">${escapeHtml(t)}</span>`;
-}
-// Countable = a real flat-stage: excludes blank, NA, HOLD and sample flats.
-function doorCountable(row, colKey) {
-  const st = doorCellStatus(row.cells[colKey]);
-  if (st === 'blank' || st === 'na' || st === 'hold') return false;
-  if (/sample/i.test(row.phase || '') || /sample/i.test(row.remark || '')) return false;
-  return true;
-}
-function doorRowComplete(row) {
-  const keys = Object.keys(row.cells);
-  if (!keys.length) return false;
-  let anyDone = false;
-  for (const k of keys) {
-    const st = doorCellStatus(row.cells[k]);
-    if (st === 'pending' || st === 'hold' || st === 'blank') return false;
-    if (st === 'done') anyDone = true;
-  }
-  return anyDone;
-}
+// % of a tower's real (non-sample) flats that are Installed.
 function doorTowerPct(rows) {
-  const real = rows.filter(r => !/sample/i.test(r.phase || '') && !/^\s*hold/i.test(r.phase || ''));
+  const real = rows.filter(r => doorFlatStatus(r) !== 'sample');
   if (!real.length) return '—';
-  const done = real.filter(doorRowComplete).length;
+  const done = real.filter(r => doorFlatStatus(r) === 'installed').length;
   return Math.round(done / real.length * 100) + '% done';
 }
-// Parse one tower tab → [{flat, tower, phase, cells:{colKey:value}, remark}]
+// Parse one tower tab → [{flat, tower, floor, flatType, qty, lot, vendor, status, remark}]
 function parseDoors(csv, towerName) {
   const rows = _kwCsvRows(csv);
-  const tnum = ((towerName.match(/(\d+)/) || ['', '0'])[1]).padStart(2, '0');
-  let hIdx = rows.findIndex(r => r.some(c => /door\s*frame\s*measurement/i.test(c || '')));
+  let hIdx = rows.findIndex(r => r.some(c => /unit\s*no/i.test(c || '')) && r.some(c => /^status/i.test((c || '').trim())));
   if (hIdx < 0) return [];
   const header = rows[hIdx].map(c => (c || '').trim());
-  const colIdx = {};
-  DOOR_COLS.forEach(col => { const j = header.findIndex(h => col.match.test(h)); if (j >= 0) colIdx[col.key] = j; });
-  // Flat column: the "Tower-0X" or "Unit No" header.
-  let flatIdx = header.findIndex(h => /tower-?\s*0?\d/i.test(h) || /unit\s*no/i.test(h));
-  if (flatIdx < 0) flatIdx = 1;
-  const remarkIdx = header.findIndex(h => /remark/i.test(h));
+  const iUnit   = header.findIndex(h => /unit\s*no/i.test(h));
+  const iFloor  = header.findIndex(h => /^floor$/i.test(h));
+  const iType   = header.findIndex(h => /flat\s*type/i.test(h));
+  const iQty    = header.findIndex(h => /^qty/i.test(h));
+  const iLot    = header.findIndex(h => /lot\s*no/i.test(h));
+  const iVendor = header.findIndex(h => /vendor/i.test(h));
+  const iStatus = header.findIndex(h => /^status/i.test(h));
+  const iRemark = header.findIndex(h => /remark/i.test(h));
+  if (iUnit < 0) return [];
   const out = [];
   for (let i = hIdx + 1; i < rows.length; i++) {
     const r = rows[i];
-    const raw = (r[flatIdx] || '').trim();
-    let flat = null;
-    if (/^\d{2,3}$/.test(raw)) flat = 'T' + tnum + '/' + raw;          // bare unit (T3)
-    else { const m = raw.match(/^T0?(\d)\s*\/?\s*(\d{2,3})$/i); if (m) flat = 'T0' + m[1] + '/' + m[2]; }
+    const flat = (r[iUnit] || '').trim();
     if (!flat) continue;
-    const cells = {};
-    Object.entries(colIdx).forEach(([k, j]) => { cells[k] = (r[j] || '').trim(); });
-    out.push({ flat, tower: towerName, phase: (r[0] || '').trim(), cells, remark: remarkIdx >= 0 ? (r[remarkIdx] || '').trim() : '' });
+    if (/TOTAL|INSTALLED\s*DOORS|BALANCE|PENDING|GRAND/i.test(flat)) continue;
+    if (!/^T\d/i.test(flat) && !/^\d+$/.test(flat)) continue; // real unit ("T04/11") or bare stilt-lobby number
+    out.push({
+      flat, tower: towerName,
+      floor:    iFloor  >= 0 ? (r[iFloor]  || '').trim() : '',
+      flatType: iType   >= 0 ? (r[iType]   || '').trim() : '',
+      qty:      iQty    >= 0 ? (parseInt((r[iQty] || '').trim(), 10) || 0) : 0,
+      lot:      iLot    >= 0 ? (r[iLot]    || '').trim() : '',
+      vendor:   iVendor >= 0 ? (r[iVendor] || '').trim() : '',
+      status:   iStatus >= 0 ? (r[iStatus] || '').trim() : '',
+      remark:   iRemark >= 0 ? (r[iRemark] || '').trim() : '',
+    });
   }
   return out;
 }
@@ -7513,64 +7596,49 @@ async function renderDoorsInto(host) {
     const towerNames = doorTabs.map(t => t.name);
     if (activeDoorsTower !== 'all' && !towerNames.includes(activeDoorsTower)) activeDoorsTower = 'all';
     const towerRows = activeDoorsTower === 'all' ? allRows : allRows.filter(r => r.tower === activeDoorsTower);
-    const presentCols = DOOR_COLS.filter(col => towerRows.some(r => col.key in r.cells));
-    if (activeDoorsColumn !== 'all' && !presentCols.some(c => c.key === activeDoorsColumn)) {
-      activeDoorsColumn = 'all'; activeDoorsStatus = 'all';
-    }
-    if (activeDoorsColumn === 'all') activeDoorsStatus = 'all';
-    const colScopeRows = activeDoorsColumn === 'all' ? [] : towerRows.filter(r => activeDoorsColumn in r.cells);
-    const stCounts = { all: colScopeRows.length };
-    VANITY_STATUSES.forEach(s => { stCounts[s.key] = 0; });
-    colScopeRows.forEach(r => { stCounts[doorCellStatus(r.cells[activeDoorsColumn])] = (stCounts[doorCellStatus(r.cells[activeDoorsColumn])]||0) + 1; });
-    let filtered = towerRows;
-    if (activeDoorsColumn !== 'all') filtered = filtered.filter(r => activeDoorsColumn in r.cells);
-    if (activeDoorsStatus !== 'all') filtered = filtered.filter(r => doorCellStatus(r.cells[activeDoorsColumn]) === activeDoorsStatus);
+    const realRows = towerRows.filter(r => doorFlatStatus(r) !== 'sample');
+    const stCounts = { all: realRows.length };
+    DOOR_STATUSES.forEach(s => { stCounts[s.key] = 0; });
+    realRows.forEach(r => { const st = doorFlatStatus(r); stCounts[st] = (stCounts[st] || 0) + 1; });
+    if (activeDoorsStatus !== 'all' && !DOOR_STATUSES.some(s => s.key === activeDoorsStatus)) activeDoorsStatus = 'all';
+    let filtered = activeDoorsStatus === 'all' ? towerRows : realRows.filter(r => doorFlatStatus(r) === activeDoorsStatus);
     // ── Cards ──
     const towerCards = `<div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:0 0 4px 2px">📍 Tower</div><div class="cards" style="overflow-x:auto;flex-wrap:nowrap;padding-bottom:6px">
       ${kwColorCard('tower','all','All Towers',allRows.length,activeDoorsTower==='all',{ c:'#1e3a5f', activeBg:'#e0e7ff', ring:'#c7d2fe' }, doorTowerPct(allRows))}
       ${towerNames.map(t => { const tr = allRows.filter(r => r.tower === t); return kwColorCard('tower', t, t, tr.length, activeDoorsTower === t, { c:'#7c3aed', activeBg:'#f3e8ff', ring:'#e9d5ff' }, doorTowerPct(tr)); }).join('')}
     </div>`;
-    const colCards = `<div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:10px 0 4px 2px">🚪 Report column · ${presentCols.length} in scope</div><div class="cards" style="overflow-x:auto;flex-wrap:nowrap;padding-bottom:6px">
-      ${kwColorCard('column','all','All Columns',towerRows.length,activeDoorsColumn==='all',{ c:'#1e3a5f', activeBg:'#e0e7ff', ring:'#c7d2fe' })}
-      ${presentCols.map(col => {
-        const applicable = towerRows.filter(r => col.key in r.cells && doorCountable(r, col.key));
-        const done = applicable.filter(r => doorCellStatus(r.cells[col.key]) === 'done').length;
-        return kwColorCard('column', col.key, col.label, done, activeDoorsColumn === col.key, { c:'#0e7490', activeBg:'#cffafe', ring:'#a5f3fc' }, `of ${applicable.length} done`);
-      }).join('')}
+    const statusCards = `<div style="font-size:10px;font-weight:700;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:10px 0 4px 2px">🚪 Status</div><div class="cards" style="overflow-x:auto;flex-wrap:nowrap;padding-bottom:6px">
+      ${kwColorCard('status','all','All',stCounts.all,activeDoorsStatus==='all',{ c:'#1e3a5f', activeBg:'#e0e7ff', ring:'#c7d2fe' })}
+      ${DOOR_STATUSES.map(s => kwColorCard('status', s.key, s.label, stCounts[s.key]||0, activeDoorsStatus===s.key, s)).join('')}
     </div>`;
-    const statusCards = activeDoorsColumn === 'all' ? '' :
-      `<div style="font-size:10px;font-weight:700;color:#0e7490;letter-spacing:1px;text-transform:uppercase;margin:8px 0 4px 14px">↳ ${escapeHtml((DOOR_COLS.find(c=>c.key===activeDoorsColumn)||{}).label)} status</div><div class="cards" style="overflow-x:auto;flex-wrap:nowrap;padding-bottom:6px;margin-left:12px">
-        ${kwColorCard('status','all','All',stCounts.all,activeDoorsStatus==='all',{ c:'#1e3a5f', activeBg:'#e0e7ff', ring:'#c7d2fe' })}
-        ${VANITY_STATUSES.map(s => kwColorCard('status', s.key, s.label, stCounts[s.key]||0, activeDoorsStatus===s.key, s)).join('')}
-      </div>`;
     // ── Table ──
     const hasRemark = filtered.some(r => r.remark);
-    const colHeads = presentCols.map(c => `<th style="text-align:center;font-size:10px">${escapeHtml(c.label)}</th>`).join('');
     const tableHtml = filtered.length === 0
       ? `<div class="empty">No flats match these filters.</div>`
-      : `<table style="min-width:${380 + presentCols.length*110}px">
+      : `<table style="min-width:640px">
           <thead><tr>
-            <th>#</th><th>Flat</th><th>Phase</th>
-            ${colHeads}
+            <th>#</th><th>Flat</th><th>Floor</th><th>Type</th><th style="text-align:center">Qty</th><th>Lot</th><th>Vendor</th><th style="text-align:center">Status</th>
             ${hasRemark ? '<th>Remark</th>' : ''}
           </tr></thead>
           <tbody>${filtered.map((r,i) => `<tr>
             <td>${i+1}</td>
             <td style="font-family:monospace;font-weight:700;color:#1e3a5f">${escapeHtml(r.flat)}</td>
-            <td style="font-size:10px;color:#64748b">${escapeHtml(r.phase||'—')}</td>
-            ${presentCols.map(c => `<td style="text-align:center">${c.key in r.cells ? doorPill(r.cells[c.key]) : '<span style="color:#cbd5e1">—</span>'}</td>`).join('')}
+            <td style="font-size:11px;color:#64748b">${escapeHtml(r.floor||'—')}</td>
+            <td style="font-size:11px;color:#64748b">${escapeHtml(r.flatType||'—')}</td>
+            <td style="text-align:center;font-size:11px">${r.qty||'—'}</td>
+            <td style="font-size:11px;color:#64748b">${escapeHtml(r.lot||'—')}</td>
+            <td style="font-size:11px;color:#64748b">${escapeHtml(r.vendor||'—')}</td>
+            <td style="text-align:center">${doorStatusPill(doorFlatStatus(r))}</td>
             ${hasRemark ? `<td style="font-size:11px;color:#64748b">${escapeHtml(r.remark||'')}</td>` : ''}
           </tr>`).join('')}</tbody>
         </table>`;
     const scopeParts = [];
     if (activeDoorsTower !== 'all')  scopeParts.push(activeDoorsTower);
-    if (activeDoorsColumn !== 'all') scopeParts.push((DOOR_COLS.find(c=>c.key===activeDoorsColumn)||{}).label);
-    if (activeDoorsStatus !== 'all') scopeParts.push((VANITY_STATUSES.find(s=>s.key===activeDoorsStatus)||{}).label);
+    if (activeDoorsStatus !== 'all') scopeParts.push((DOOR_STATUSES.find(s=>s.key===activeDoorsStatus)||{}).label);
     const scopeLabel = scopeParts.length === 0 ? 'All flats' : scopeParts.join(' · ');
     host.innerHTML = `
-      ${liveBar('live', allRows.length, 'GREENLAM DOORS.xlsx')}
+      ${liveBar('live', allRows.length, 'GREENLAM DOOR.xlsx')}
       ${towerCards}
-      ${colCards}
       ${statusCards}
       <div style="font-size:11px;color:#64748b;margin:8px 0">Showing: <strong>${escapeHtml(scopeLabel)}</strong></div>
       <div class="tbl-wrap" style="margin-top:8px">
@@ -7582,15 +7650,14 @@ async function renderDoorsInto(host) {
         <div style="overflow-x:auto">${tableHtml}</div>
       </div>
       <div style="font-size:11px;color:#94a3b8;text-align:center;margin-top:8px">
-        Source: <a href="https://docs.google.com/spreadsheets/d/${escapeHtml(FILES.doors)}/edit" target="_blank" style="color:#1d4ed8;text-decoration:none">GREENLAM DOORS</a>
+        Source: <a href="https://docs.google.com/spreadsheets/d/${escapeHtml(FILES.doors)}/edit" target="_blank" style="color:#1d4ed8;text-decoration:none">GREENLAM DOOR</a>
         · Use the Reload button at the top to refresh.
       </div>`;
     host.querySelectorAll('[data-kwgroup]').forEach(b => {
       b.addEventListener('click', () => {
         const g = b.dataset.kwgroup, k = b.dataset.kwkey;
-        if (g === 'tower')        { activeDoorsTower = k; activeDoorsColumn = 'all'; activeDoorsStatus = 'all'; }
-        else if (g === 'column')  { activeDoorsColumn = k; activeDoorsStatus = 'all'; }
-        else if (g === 'status')    activeDoorsStatus = k;
+        if (g === 'tower')       { activeDoorsTower = k; activeDoorsStatus = 'all'; }
+        else if (g === 'status')   activeDoorsStatus = k;
         renderPurchasableTab();
       });
     });
