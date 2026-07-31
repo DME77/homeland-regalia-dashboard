@@ -273,6 +273,7 @@ tr:nth-child(even) td { background:var(--tbl-alt); }
       <button class="tab-btn" data-tab="labour">👷 Manpower Report</button>
       <button class="tab-btn" data-tab="purchasable">🛒 Purchasable Items</button>
       <button class="tab-btn" data-tab="elevators">🛗 Elevators</button>
+      <button class="tab-btn" id="hgpDrawingsTab" title="Opens the HGP Drawings site (dwg-hgp.vercel.app) in this tab">📐 HGP Drawings</button>
     </div><!-- /tabnav -->
   </div><!-- /header-content -->
 </div><!-- /header -->
@@ -8999,9 +9000,17 @@ function showTab(key) {
   else if (key === 'purchasable') renderPurchasableTab();
   else if (key === 'elevators')   renderElevators();
 }
-document.querySelectorAll('.tab-btn').forEach(b => {
+// Only wire buttons that map to an in-dashboard pane (data-tab). External
+// links like "HGP Drawings" are wired separately below and navigate away
+// instead of switching panes.
+document.querySelectorAll('.tab-btn[data-tab]').forEach(b => {
   b.addEventListener('click', () => showTab(b.dataset.tab));
 });
+// "HGP Drawings" tab — external site, opens instantly in this same tab.
+const hgpDrawingsBtn = document.getElementById('hgpDrawingsTab');
+if (hgpDrawingsBtn) {
+  hgpDrawingsBtn.addEventListener('click', () => { window.location.href = 'https://dwg-hgp.vercel.app/'; });
+}
 
 // ─── SHEET HEALTH CHECK ───────────────────────────────────
 async function runHealthCheck() {
