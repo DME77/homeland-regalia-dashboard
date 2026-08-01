@@ -8803,9 +8803,15 @@ function csvParseFields(raw) {
   out.push(cur);
   return out;
 }
+// Real sheet header (verified against the live "ALL LIFTS STATUS" sheet,
+// LIFTS DETAILS tab) is 15 columns, not the 14 previously assumed — the
+// old guessed names ("Payment","Delivery","Site Ready","Schedule") didn't
+// match the actual sheet at all, and the extra "MS Structure Work" column
+// (between Marble and Interior) was silently dropped, which also shifted
+// Handover's real column out of range. Fixed below to match the real sheet.
 function parseElevators(raw) {
   const fields = csvParseFields(raw);
-  const HEADER = ['Contractor','Lift Details','Lift No','Detail','Payment','Delivery','Site Ready','Schedule','Slow Speed','Architraves','Operational','Marble','Interior','Handover'];
+  const HEADER = ['Contractor','Lift Details','Lift No','Detail','Civil Shaft Readiness','Waterproofing (Lift Pit)','MR Ventilation Cutout','3-Phase Power Supply','Slow Speed','Architraves','Operational','Marble Installed','MS Structure Work','Interior','Handover'];
   for (let i = 0; i < fields.length; i++) {
     const m = (fields[i] || '').match(/^(.+?)\s+(Hybon|Mitsubishi)\s*$/i);
     if (!m) continue;
@@ -8816,11 +8822,11 @@ function parseElevators(raw) {
   }
   let hIdx = fields.findIndex(f => /Lift details Contractor/i.test(f));
   if (hIdx < 0) hIdx = 0;
-  let cursor = hIdx + 14;
-  const lastH = fields[hIdx + 13] || '';
+  let cursor = hIdx + 15;
+  const lastH = fields[hIdx + 14] || '';
   const mH = lastH.match(/^(\s*HANDOVER\s*)(.*)$/i);
   if (mH && mH[2].trim()) {
-    fields[hIdx + 13] = mH[1].trim();
+    fields[hIdx + 14] = mH[1].trim();
     fields.splice(cursor, 0, mH[2]);
   }
   const rowStart = /^\s*(Hybon|Mitsubishi)\s*$/i;
@@ -8831,8 +8837,8 @@ function parseElevators(raw) {
   const rows = startIdxs.map((s, k) => {
     const e = k+1 < startIdxs.length ? startIdxs[k+1] : fields.length;
     const row = fields.slice(s, e).map(x => (x||'').trim());
-    while (row.length < 14) row.push('');
-    return row.slice(0, 14);
+    while (row.length < 15) row.push('');
+    return row.slice(0, 15);
   });
   return { header: HEADER, rows };
 }
@@ -8854,8 +8860,8 @@ function elevatorCellHtml(v) {
   return `<span class="pill" style="background:${s.pillBg};color:${s.pillColor}">${escapeHtml(s.label)}</span>`;
 }
 const STAGE_START   = 4;
-const STAGE_END     = 13;
-const HANDOVER_IDX  = 13;
+const STAGE_END     = 14;
+const HANDOVER_IDX  = 14;
 function classifyElevator(row) {
   const ho = String(row[HANDOVER_IDX] || '').trim().toUpperCase();
   if (ho === 'TRUE') return 'done';
