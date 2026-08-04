@@ -1584,8 +1584,11 @@ function parseGlassRailingTab(csv, towerLabel) {
   const iFloor = H.findIndex(h => h.includes('FLOOR'));
   const iFlat  = H.findIndex(h => h.includes('FLAT') && !h.includes('FLOOR'));
 
-  // Collect column indices for the 3 key stage groups
-  const graniteIdxs = H.reduce((a, h, k) => { if (h.includes('GRANITE')) a.push(k); return a; }, []);
+  // Collect column indices for the granite-fixing stage group. Excludes
+  // "Cleaning of Granite" (T6 etc.) — a separate post-install step that also
+  // contains the word GRANITE and was previously mis-bucketed as a stray
+  // unlabeled "Granite" stage with a permanent 0% (it isn't a fixing stage).
+  const graniteIdxs = H.reduce((a, h, k) => { if (h.includes('GRANITE') && !h.includes('CLEAN')) a.push(k); return a; }, []);
   const iChannel    = H.findIndex(h => h.includes('CHANNEL'));
   // Railing/Glass installation — avoid picking up "Railing sizes to vendor"
   const iRailing    = H.findIndex(h => (h.includes('RAILING') || h.includes('GLASS')) && h.includes('INSTALL'));
@@ -1597,9 +1600,17 @@ function parseGlassRailingTab(csv, towerLabel) {
     if (v === '' || v === 'FALSE') return 'pending';
     return 'delay'; // broken, Repair, HOLD, rectification, pending, etc.
   }
+  // Club granite fixing by its physical side — "Oval Cafe Side · Granite",
+  // "Kothi Side · Granite", etc. — same clubbing approach used for GRC shafts.
+  // Some towers (T1, T3, T6) track a 3rd, genuinely distinct side (Ramp/Road)
+  // in addition to Oval Cafe + Kothi, so it gets its own group rather than
+  // being folded into Kothi (the old code merged it in via a shared "RAMP"
+  // keyword check, which is why Kothi's total looked inflated).
   function graniteShortName(h) {
-    if (h.includes('FRONT') || h.includes('OVAL CAFE')) return 'Granite (Front/Oval)';
-    if (h.includes('REAR')  || h.includes('KOTHI') || h.includes('B.R') || h.includes('RAMP')) return 'Granite (Rear/Kothi)';
+    if (h.includes('FRONT') || h.includes('OVAL CAFE')) return 'Oval Cafe Side · Granite';
+    if (h.includes('REAR')  || h.includes('KOTHI') || h.includes('B.R'))  return 'Kothi Side · Granite';
+    if (h.includes('RAMP'))  return 'Ramp Side · Granite';
+    if (h.includes('ROAD'))  return 'Road Side · Granite';
     return 'Granite';
   }
 
@@ -4467,9 +4478,10 @@ async function renderWork() {
     let glassStageNav = '';
     let glassStageBaseItems = null; // items before the stage chip narrows them (for the % summary denominators)
     if (activeWorkItem === 'Glass Railing' && items.some(r => r.stageBreakdown)) {
-      const GRANITE_NAMES = ['Granite (Front/Oval)', 'Granite (Rear/Kothi)'];
-      const grAny  = r => r.stageBreakdown && GRANITE_NAMES.some(n => r.stageBreakdown.find(s => s.shortName === n));
-      const grDone = r => r.stageBreakdown && GRANITE_NAMES.filter(n => r.stageBreakdown.find(s => s.shortName === n)).every(n => (r.stageBreakdown.find(s => s.shortName === n)||{}).status === 'done');
+      // Matches any granite-side stage (Oval Cafe / Kothi / Ramp / Road), so it
+      // still works correctly on towers with 2 sides or 3.
+      const grAny  = r => r.stageBreakdown && r.stageBreakdown.some(s => s.shortName.includes('Granite'));
+      const grDone = r => r.stageBreakdown && r.stageBreakdown.filter(s => s.shortName.includes('Granite')).every(s => s.status === 'done');
       const stDone = (r, name) => { const s = r.stageBreakdown && r.stageBreakdown.find(s => s.shortName === name); return s && s.status === 'done'; };
       const cntAll     = items.length;
       const cntGranite = items.filter(r => grAny(r) && grDone(r)).length;
@@ -4725,6 +4737,10 @@ async function renderWork() {
       ${stagePctSummaryHtml}
       ${grcFloorMatrixHtml}
       ${interiorStageSummaryHtml}
+      ${/* GRC floor-wise matrix already shows every floor's per-category status for
+           the selected shaft, so the generic status-card + flat item-table below it
+           would just repeat the same 22 rows — skip it in that view. */
+        grcFloorMatrixHtml ? '' : `
       ${isSqftMode ? '' : statusCardsHtml(statusTabsForSub, counts, activeWorkStatus)}
       <div class="tbl-wrap" style="border-color:${tab.border}">
         <div class="tbl-head" style="background:${tab.bg};border-bottom:1px solid ${tab.border}">
@@ -4733,7 +4749,7 @@ async function renderWork() {
           <span class="tbl-count" style="background:${tab.color}">${filtered.length} items</span>
         </div>
         ${tableHtml}
-      </div>`;
+      </div>`}`;
     container.querySelectorAll('[data-mom-open]').forEach(b => b.addEventListener('click', () => openInteriorMom(activeWorkItem !== 'all' ? activeWorkItem : '')));
     container.querySelectorAll('.sub-btn[data-key]').forEach(b => {
       b.addEventListener('click', () => {
