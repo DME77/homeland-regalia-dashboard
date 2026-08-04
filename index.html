@@ -2044,13 +2044,19 @@ function parseKitchenRailingTab(csv, towerLabel) {
   if (hIdx < 0) return [];
 
   const H = rows[hIdx].map(c => (c||'').toUpperCase().trim());
-  const iFloor  = H.findIndex(h => h.includes('FLOOR'));
-  const iToe    = H.findIndex(h => h.includes('TOE') && h.includes('WALL'));
-  const iRail   = H.findIndex(h => h.includes('RAILING') && h.includes('FIX'));
+  const iFloor    = H.findIndex(h => h.includes('FLOOR'));
+  const iToe      = H.findIndex(h => h.includes('TOE') && h.includes('WALL'));
+  // Granite + Material Ready aren't present on every tower's tab (e.g. T5 has no
+  // Granite column, T6 has no Material Ready column) — each is only added when found.
+  const iGranite  = H.findIndex(h => h.includes('GRANITE'));
+  const iMaterial = H.findIndex(h => h.includes('MATERIAL') && h.includes('READY'));
+  const iRail     = H.findIndex(h => h.includes('RAILING') && h.includes('FIX'));
 
   const stageIdxs = [
-    { idx: iToe,  name: 'Toe Wall' },
-    { idx: iRail, name: 'Railing Fixing' },
+    { idx: iToe,      name: 'Toe Wall' },
+    { idx: iGranite,  name: 'Granite' },
+    { idx: iMaterial, name: 'Material Ready' },
+    { idx: iRail,     name: 'Railing Fixing' },
   ].filter(s => s.idx >= 0);
 
   if (stageIdxs.length === 0) return [];
