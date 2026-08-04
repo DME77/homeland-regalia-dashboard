@@ -323,7 +323,7 @@ const FILES = {
   commercialKitchen: '1831xcw0P-qb1BKL1qtVUHwrLyC5TFLGGdlHUDSEIsEA',
   chinaPending: '1nexBq-N0efE2Vc33yELi7wNo1kaL-HqSRV4H87GKyGc',
   basements: '1VtvUPnqEMm68VYv9CSbpKSJodS5gRU-yme90DbqLeAk',
-  kitchenWardrobe: '11MghP-8uexAw292CoYSSKNoZswP1vpzgPNk8_huGrh4',
+  kitchenWardrobe: '1lHsW1qywb5b1mKxRCsVtioMze5364eeuKPadb2PPcLs',
   vanity: '1lVaxVDsvSwkCPeD4Fzc2lCvrHYGgQB_IjiNGJyEdRxA',
   doors: '1FzeWySFOI0rwpEFDMFh9lxH1nmwkgqd0suHBLRSWH9w',
   handover: '1yQRAo6GFkubQOAMAcxTyajthH6WyyybAagPDYgSELUg',
@@ -661,11 +661,11 @@ const SHEET_TABS = {
     { gid: 2091010628, name: 'ID' },
   ],
   // Kitchen & Wardrobe — per-flat pipeline, one tab per tower
-  '11MghP-8uexAw292CoYSSKNoZswP1vpzgPNk8_huGrh4': [
-    { gid: 1287710488, name: 'TOWER-03' },
-    { gid: 0,          name: 'TOWER-04' },
-    { gid: 1280935904, name: 'TOWER-05' },
-    { gid: 2128703554, name: 'TOWER-06' },
+  '1lHsW1qywb5b1mKxRCsVtioMze5364eeuKPadb2PPcLs': [
+    { gid: 1072796292, name: 'TOWER-03' },
+    { gid: 431912755,  name: 'TOWER-04' },
+    { gid: 1285392640, name: 'TOWER-05' },
+    { gid: 1876580954, name: 'TOWER-06' },
   ],
   // Vanity — per-flat column tracker, one tab per tower
   '1lVaxVDsvSwkCPeD4Fzc2lCvrHYGgQB_IjiNGJyEdRxA': [
@@ -6897,7 +6897,7 @@ const KW_STATUSES = [
   { key:'blocked',    label:'Hold / No Consent',c:'#dc2626', activeBg:'#fee2e2', ring:'#fca5a5' },
 ];
 const KW_STATUS_STYLE = Object.fromEntries(KW_STATUSES.map(s => [s.key, { bg:s.activeBg, c:s.c }]));
-function _kwTruthy(v) { return /^\s*true\s*$/i.test(String(v || '')); }
+function _kwTruthy(v) { const s = String(v || '').trim(); return /^true$/i.test(s) || s === '✓' || s === '✔'; }
 // Row-based CSV → array of arrays (quote-aware, preserves row boundaries).
 function _kwCsvRows(csv) {
   const rows = []; let row = [], field = '', inQ = false;
@@ -7027,30 +7027,71 @@ async function renderTileCladding(container, subnav, sub, extraNav = '') {
   }
 }
 // Parse one tower tab → [{flat, vendor, kitchen:[5], wardrobe:[5], note}]
+// The sheet has a 2-row merged header: row A has "KITCHEN" / "WARDROBE" block
+// labels, row B has the actual stage names (Ready For Measurement, Measurement,
+// Site Readiness, Carcass Delivered, Installation, …). Column counts/order vary
+// per tower tab (e.g. Tower 5/6 insert an extra "Installation Front" column, and
+// Kitchen has 2 extra columns — Counter Top, Sink/Faucet — not present in
+// Wardrobe), so every column is located dynamically by header text rather than
+// by a fixed index, and normalized down to the 5 stages both scopes share:
+// [Ready For Measurement, Measurement, Site Readiness, Carcass Delivered, Installation].
 function parseKitchenWardrobe(csv, towerName) {
   const rows = _kwCsvRows(csv);
-  const out = [];
-  // Some tower tabs (e.g. TOWER-03, TOWER-04) list flats as bare unit numbers
-  // ("11","12"…) instead of the "T04/11" form. Derive the tower prefix so those parse.
-  const tnum = (String(towerName || '').match(/\d+/) || [''])[0].slice(-2).padStart(2, '0');
-  for (const r of rows) {
-    let flat = (r[0] || '').trim();
-    // Data rows are either "T03/11" (a stray "T03163" also appears) or a bare "11".
-    if (/^T0\d\s*\/?\s*\d{2,3}$/i.test(flat)) {
-      flat = flat.replace(/\s+/g, '');
-    } else if (/^\d{2,3}$/.test(flat) && tnum !== '00') {
-      flat = `T${tnum}/${flat}`;            // bare unit "11" → "T04/11"
-    } else {
-      continue;
+  // Locate the block-label row (has both a "KITCHEN" and a "WARDROBE" cell).
+  let loc = null;
+  for (let r = 0; r < Math.min(rows.length, 8); r++) {
+    const row = rows[r] || [];
+    const kIdx = row.findIndex(c => (c || '').trim().toUpperCase() === 'KITCHEN');
+    const wIdx = row.findIndex(c => (c || '').trim().toUpperCase() === 'WARDROBE');
+    if (kIdx >= 0 && wIdx >= 0 && wIdx > kIdx) { loc = { blockRowIdx: r, kIdx, wIdx }; break; }
+  }
+  if (!loc) return [];
+  const blockRow = rows[loc.blockRowIdx] || [];
+  let wEnd = blockRow.length - 1;
+  for (let i = loc.wIdx + 1; i < blockRow.length; i++) {
+    if ((blockRow[i] || '').trim()) { wEnd = i - 1; break; }
+  }
+  const kStart = loc.kIdx, kEnd = loc.wIdx - 1, wStart = loc.wIdx, wEndIdx = wEnd;
+  // Header (stage-name) row sits directly under the block-label row.
+  let hIdx = loc.blockRowIdx + 1;
+  if (!rows[hIdx] || !rows[hIdx].some(c => /area\s*name/i.test(c || ''))) {
+    for (let r = loc.blockRowIdx; r < Math.min(rows.length, loc.blockRowIdx + 3); r++) {
+      if (rows[r] && rows[r].some(c => /area\s*name/i.test(c || ''))) { hIdx = r; break; }
     }
-    const cells = r.slice(0, 12).map(c => (c || '').trim());
-    while (cells.length < 12) cells.push('');
+  }
+  const header = rows[hIdx] || [];
+  const flatIdx   = header.findIndex(c => /area\s*name/i.test(c || ''));
+  const vendorIdx = header.findIndex(c => /vendor\s*name/i.test(c || ''));
+  const find = (start, end, re, exclude) => {
+    for (let i = start; i <= end; i++) {
+      const h = (header[i] || '').replace(/\n/g, ' ').trim();
+      if (re.test(h) && (!exclude || !exclude.test(h))) return i;
+    }
+    return -1;
+  };
+  const stageIdxs = (start, end) => ({
+    ready:   find(start, end, /ready\s*for/i),
+    measure: find(start, end, /measurement/i, /ready\s*for/i),
+    site:    find(start, end, /site\s*readiness/i),
+    carcass: find(start, end, /carcass/i),
+    install: find(start, end, /install/i, /front/i),
+  });
+  const kIdxs = stageIdxs(kStart, kEnd);
+  const wIdxs = stageIdxs(wStart, wEndIdx);
+  const pick = (row, idx) => idx >= 0 ? (row[idx] || '').trim() : '';
+  const stageCells = (row, idxs) => [pick(row, idxs.ready), pick(row, idxs.measure), pick(row, idxs.site), pick(row, idxs.carcass), pick(row, idxs.install)];
+  const out = [];
+  for (let i = hIdx + 1; i < rows.length; i++) {
+    const row = rows[i];
+    if (!row) continue;
+    const flat = (flatIdx >= 0 ? row[flatIdx] || '' : '').trim().replace(/\s+/g, '');
+    if (!flat) continue;
     out.push({
-      flat:     flat.replace(/\s+/g, ''),
-      vendor:   cells[1],
-      kitchen:  cells.slice(2, 7),
-      wardrobe: cells.slice(7, 12),
-      note:     cells.slice(2).filter(Boolean).join(' '),
+      flat,
+      vendor:   pick(row, vendorIdx),
+      kitchen:  stageCells(row, kIdxs),
+      wardrobe: stageCells(row, wIdxs),
+      note:     '',
     });
   }
   return out;
@@ -7086,7 +7127,7 @@ function kwStatusPill(key) {
 function kwStageCell(v) {
   const t = (v || '').trim();
   if (!t) return `<span style="color:#cbd5e1">—</span>`;
-  if (/^true$/i.test(t))  return `<span class="pill" style="background:#dcfce7;color:#16a34a">✓</span>`;
+  if (/^true$/i.test(t) || t === '✓' || t === '✔') return `<span class="pill" style="background:#dcfce7;color:#16a34a">✓</span>`;
   if (/^false$/i.test(t)) return `<span class="pill" style="background:#f1f5f9;color:#94a3b8">✗</span>`;
   return `<span class="pill" style="background:#fef3c7;color:#b45309;font-size:9px">${escapeHtml(t)}</span>`;
 }
@@ -7161,10 +7202,9 @@ async function renderKitchenWardrobeInto(host, scope) {
     const scopedRows = activeKwTower === 'all' ? vendorRows : vendorRows.filter(r => r.tower === activeKwTower);
     if (activeKwTower === 'all') setStatus('all');
     // Status counts — CUMULATIVE per milestone (a flat counts toward every stage
-    // it has completed, not just its furthest one). Only flats with a real
-    // boolean Measurement cell count; NA / DIS. APPROVED / SAMPLE / blank are excluded.
-    const isRealBool = v => { const u = String(v || '').trim().toUpperCase(); return u === 'TRUE' || u === 'FALSE'; };
-    const countableRows = scopedRows.filter(r => isRealBool(r.cells[1]));   // idx1 = Measurement
+    // it has completed, not just its furthest one). Hold / No Consent / Sample
+    // flats are excluded (they're surfaced separately via the "Not Ordered" bucket).
+    const countableRows = scopedRows.filter(r => kwVendorKind(r.vendor) === 'real');
     const counts = {
       all:        countableRows.length,
       measured:   countableRows.filter(r => _kwTruthy(r.cells[1])).length,
