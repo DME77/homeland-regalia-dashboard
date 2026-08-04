@@ -1221,9 +1221,14 @@ function parseWaterproofV2(md) {
 
 // ─── SPANDREL GLAZING ─────────────────────────────────────
 // Custom parser for the Spandrel Glazing sheet (3 tabs: Tower 1, Tower 5, Tower 6).
-// Done = "Glass installation" column is TRUE (T1) or "Sprandle panel and Glass installation" (T5/T6)
-// Remark when DONE    = Side flashing and smoke seal column value
-// Remark when PENDING = HOD / Remarks column (reason for pending)
+// Tracks 3 stages per flat, matching the GRC / Kitchen Railing report style:
+// Material at Site → Frame Installation → Glass Installation.
+// Column names differ slightly per tower (T1: "Material At site" / "Frame
+// installation" / "Glass installation"; T5/T6: "material on site (Spandrel
+// Pannel)" / "Frame installation" / "Glass installation" — T5/T6 also have a
+// separate "Glass received at site" column, intentionally not counted here
+// since it isn't one of the 3 requested stages and would double up with
+// Material at Site conceptually).
 // GIDs confirmed: Tower 1 = default tab (first), Tower 5 = 1293627169, Tower 6 = 1657055676
 
 function parseSpandrelTabCsv(csv, towerLabel) {
@@ -1261,20 +1266,25 @@ function parseSpandrelTabCsv(csv, towerLabel) {
 
   const H = rows[hIdx].map(c => (c||'').toUpperCase().trim());
 
-  const iFloor      = H.findIndex(h => h.includes('FLOOR'));
-  const iFlat       = H.findIndex((h,i) => (h.includes('FLAT') || h === 'FLAT NO.' || h === 'FLAT NO') && i !== iFloor);
-  // Glass installation: T5/T6 have combined "SPRANDLE...GLASS"; T1 has separate "GLASS INSTALLATION"
-  const iCombined   = H.findIndex(h => h.includes('SPRANDLE') && h.includes('GLASS'));
-  const iGlassOnly  = H.findIndex(h => h.includes('GLASS') && h.includes('INSTALL') && !h.includes('SPRANDLE') && !h.includes('RECEIV'));
-  // Resolve: use combined for T5/T6, glass-install for T1
-  const iGlassDone  = iCombined >= 0 ? iCombined : iGlassOnly;
-  // Side flashing and smoke seal (shown in remark when flat is done)
-  const iSideFlash  = H.findIndex(h => h.includes('SIDE') && (h.includes('FLASH') || h.includes('SMOKE')));
-  // Pending reason (HOD / Remarks)
-  const iRem        = H.findIndex(h => h.includes('REMARK') || h === 'HOD');
+  const iFloor    = H.findIndex(h => h.includes('FLOOR'));
+  const iFlat     = H.findIndex((h,i) => (h.includes('FLAT') || h === 'FLAT NO.' || h === 'FLAT NO') && i !== iFloor);
+  const iMaterial = H.findIndex(h => h.includes('MATERIAL') && (h.includes('SITE') || h.includes('SPANDREL') || h.includes('SPRANDLE')));
+  const iFrame    = H.findIndex(h => h.includes('FRAME') && h.includes('INSTALL'));
+  const iGlass    = H.findIndex(h => h.includes('GLASS') && h.includes('INSTALL'));
 
-  const isDoneVal = v => { const u=(v||'').trim().toUpperCase(); return u==='TRUE'||u==='1'||u==='YES'||u==='DONE'||u==='✓'; };
-  const fmtBool   = v => { const u=(v||'').trim().toUpperCase(); if(!u) return '—'; return isDoneVal(v)?'Done':'Pending'; };
+  const stageIdxs = [
+    { idx: iMaterial, name: 'Material at Site' },
+    { idx: iFrame,    name: 'Frame Installation' },
+    { idx: iGlass,    name: 'Glass Installation' },
+  ].filter(s => s.idx >= 0);
+  if (stageIdxs.length === 0) return [];
+
+  function cellStat(val) {
+    const v = (val || '').trim().toUpperCase();
+    if (v === 'TRUE' || v === '1' || v === 'YES' || v === 'DONE' || v === '✓') return 'done';
+    if (v === '' || v === 'FALSE') return 'pending';
+    return 'delay'; // note / date / other non-boolean value
+  }
 
   const items = [];
   let curFloor = '';
@@ -1285,25 +1295,25 @@ function parseSpandrelTabCsv(csv, towerLabel) {
     if (!flatNo) continue;
     const label = curFloor ? `F${curFloor} – ${flatNo}` : flatNo;
 
-    if (iGlassDone < 0) continue; // can't determine status without the key column
-    const glassDone = isDoneVal(row[iGlassDone]);
-    const anyVal    = (row[iGlassDone]||'').trim() !== '';
-    const status    = glassDone ? 'done' : anyVal ? 'delay' : 'pending';
+    const breakdown = stageIdxs.map(({ idx, name }) => {
+      const raw = (row[idx] || '').trim();
+      return { shortName: name, status: cellStat(raw), raw };
+    });
+    const doneCount  = breakdown.filter(s => s.status === 'done').length;
+    const delayCount = breakdown.filter(s => s.status === 'delay').length;
+    let status;
+    if (doneCount === breakdown.length)           status = 'done';
+    else if (doneCount === 0 && delayCount === 0) status = 'pending';
+    else                                           status = 'delay';
+    const remark = breakdown.filter(s => s.status === 'delay').map(s => `${s.shortName}: ${s.raw}`).join('; ');
 
-    let remark = '';
-    if (glassDone) {
-      // Show side flashing status in remark
-      if (iSideFlash >= 0) {
-        const sfVal = (row[iSideFlash]||'').trim();
-        remark = sfVal ? `Side flash: ${fmtBool(sfVal)}` : '';
-      }
-    } else {
-      // Show reason why pending
-      remark = iRem >= 0 ? (row[iRem]||'').trim() : '';
-    }
-
-    items.push({ contractor:'Spandrel Glazing', tower: towerLabel, label,
-      done: glassDone ? 1 : 0, total: 1, status, remark });
+    items.push({
+      contractor: 'Spandrel Glazing', tower: towerLabel, label,
+      done: doneCount, total: breakdown.length, status, remark,
+      stageNames: breakdown.map(s => s.shortName),
+      states: breakdown.map(s => s.status === 'done' ? 'TRUE' : (s.status === 'delay' ? s.raw : 'FALSE')),
+      stageBreakdown: breakdown,
+    });
   }
   return items;
 }
