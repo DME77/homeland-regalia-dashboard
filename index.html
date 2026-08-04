@@ -2008,7 +2008,7 @@ async function loadFHCDoor(fileId) {
   return results.flat();
 }
 
-// ─── Kitchen Railing — per-tower parser (T3–T6) ─────────────────────────────
+// ─── Kitchen Railing — per-tower parser (T1–T6) ─────────────────────────────
 // Tracks 2 stages per floor: Kitchen Toe Wall Readiness + MS Kitchen Railing Fixing.
 // Aggregates both flats in each floor, returns one item per floor.
 function parseKitchenRailingTab(csv, towerLabel) {
@@ -2121,6 +2121,8 @@ function parseKitchenRailingTab(csv, towerLabel) {
 
 async function loadKitchenRailing(fileId) {
   const tabs = [
+    { gid: 1555245672, tower: 'T1' },
+    { gid: 2064988852, tower: 'T2' },
     { gid: 0,          tower: 'T3' },
     { gid: 1071972845, tower: 'T4' },
     { gid: 1398858090, tower: 'T5' },
