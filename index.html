@@ -1590,6 +1590,9 @@ function parseGlassRailingTab(csv, towerLabel) {
   // unlabeled "Granite" stage with a permanent 0% (it isn't a fixing stage).
   const graniteIdxs = H.reduce((a, h, k) => { if (h.includes('GRANITE') && !h.includes('CLEAN')) a.push(k); return a; }, []);
   const iChannel    = H.findIndex(h => h.includes('CHANNEL'));
+  // Glass at site — only tracked on T4/T5/T6 sheets ("GLASS At Site"); T1-T3
+  // don't have this column. Excludes "GLASS...INSTALL" (that's iRailing below).
+  const iGlassSite  = H.findIndex(h => h.includes('GLASS') && h.includes('SITE') && !h.includes('INSTALL'));
   // Railing/Glass installation — avoid picking up "Railing sizes to vendor"
   const iRailing    = H.findIndex(h => (h.includes('RAILING') || h.includes('GLASS')) && h.includes('INSTALL'));
   const iHOD        = H.findIndex(h => h === 'HOD');
@@ -1639,6 +1642,9 @@ function parseGlassRailingTab(csv, towerLabel) {
     });
     if (iChannel >= 0) {
       breakdown.push({ shortName: 'Channel', status: cellStat(row[iChannel]), raw: (row[iChannel] || '').trim() });
+    }
+    if (iGlassSite >= 0) {
+      breakdown.push({ shortName: 'Glass at Site', status: cellStat(row[iGlassSite]), raw: (row[iGlassSite] || '').trim() });
     }
     if (iRailing >= 0) {
       breakdown.push({ shortName: 'Railing/Glass', status: cellStat(row[iRailing]), raw: (row[iRailing] || '').trim() });
@@ -4733,7 +4739,6 @@ async function renderWork() {
       ${baffleTypeNav}
       ${locationNav}
       ${sideNav}
-      ${glassStageNav}
       ${stagePctSummaryHtml}
       ${grcFloorMatrixHtml}
       ${interiorStageSummaryHtml}
