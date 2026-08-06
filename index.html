@@ -317,7 +317,7 @@ const FILES = {
   civil:          '1fjIGtmCXMPE2vfIyvNODrn8HReVw1aPqY3iNLsSuxQQ',
   civilFacade:    '1TSgRRwur-HGjuOK3XlxlbOBiEUkYmniHcKldo-xFq80',
   tileCladding:   '1g9OdlXU0lkw2RNs5HtOZBcDwBhqtKP4cki8wDOj3DDg',
-  landscape:      '1ICmK_vcCTczSbNbTrEGg3f72wWilx8_NrsepsxSceZs',
+  landscape:      '1IeCODz5TtcxaLL4GMLG91qsOLLcAMqL78L4_OYU78e0',
   interior:       '15WH66qd3e04ojvDhg7DQiWVDOLa9oDvo8LQDpJtQL_U',
   elevators:      '1_p6ElHE6TsrEzrSLxpCF_BFcsQhLZmLT',
   commercialKitchen: '1831xcw0P-qb1BKL1qtVUHwrLyC5TFLGGdlHUDSEIsEA',
@@ -3219,6 +3219,49 @@ function parseLandscapeCivil(md, contractorTag, defaultTower) {
   return items;
 }
 
+// Landscape — new "LANDSCAPING CIVIL WORK" sheet's STATUS tab: a flat per-zone
+// work-flow list (not tower/stage based like the old sheet). Columns: Zone No |
+// Zone/Area Description | Category | Status | Start Date | Target Date |
+// % Complete | Dependencies-1 | Dependencies-2 | Remarks | Manual % (fallback).
+// Zone rows are identified by a plain-integer Zone No (the trailing "OVERALL
+// PROGRESS" / "STATUS SUMMARY" / category-count blocks below the table don't
+// match that, so they're skipped automatically). Category is used as the
+// "tower"/Location field so the dashboard's Location filter groups zones by
+// category (Recreation, Lawn, Water Feature, …) instead of by tower.
+function parseLandscapeZones(csv, contractorTag) {
+  const rows = _kwCsvRows(csv);
+  const items = [];
+  for (const r of rows) {
+    if (!r || !/^\d+$/.test((r[0] || '').trim())) continue;
+    const zoneNo = r[0].trim();
+    const desc = (r[1] || '').trim();
+    if (!desc) continue;
+    const category = (r[2] || '').trim();
+    const statusRaw = (r[3] || '').trim();
+    const pct = parseInt((r[6] || '').trim(), 10) || 0;
+    const dep1 = (r[7] || '').trim();
+    const dep2 = (r[8] || '').trim();
+    const remarkRaw = (r[9] || '').trim();
+    const remarkParts = [];
+    if (remarkRaw) remarkParts.push(remarkRaw);
+    if (dep1 || dep2) remarkParts.push(`Depends on: ${[dep1, dep2].filter(Boolean).join(', ')}`);
+    let status;
+    if (pct >= 100) status = 'done';
+    else if (pct === 0 && /not started/i.test(statusRaw)) status = 'pending';
+    else status = 'delay'; // In Progress (partial)
+    items.push({
+      contractor: contractorTag,
+      tower: category || '—',
+      label: `Zone ${zoneNo} · ${desc}`,
+      done: pct,
+      total: 100,
+      status,
+      remark: remarkParts.join(' · '),
+    });
+  }
+  return items;
+}
+
 // Drawings Status — section-grouped pending-drawings tracker.
 // Layout: header row (Sr.no. | desc | Submitted by | Dependency | Status | Remarks) followed by
 // alternating section markers (`|  | TOWER-1 |...`) and data rows. Tower-6 onward drops the Remarks column.
@@ -3853,6 +3896,11 @@ async function loadCategory(key) {
   if (key === 'mepLabour') {
     const md = await fetchSheet(FILES.mepLabour);
     parsed = parseMEPLabour(md);
+  } else if (key === 'landscape') {
+    // New sheet's per-zone STATUS tab (gid pinned — the workbook also has TASK
+    // SHEET and DRAWING tabs that aren't work-status data).
+    const csv = await fetchSheetTabRaw(FILES.landscape, 125997854);
+    parsed = parseLandscapeZones(csv, 'Landscape');
   } else if (key === 'commonAreas') {
     const md = await fetchSheet(FILES.planner);
     parsed = parseCommonAreas(md);
@@ -3946,7 +3994,6 @@ async function loadCategory(key) {
     else if (key === 'drawings')       parsed = parseDrawings(md);
     else if (key === 'civil')          parsed = parseCivilByTowerBlocks(md, 'Civil', '');
     else if (key === 'civilFacade')    parsed = parseCivilByTowerBlocks(md, 'Civil Facade', '');
-    else if (key === 'landscape')      parsed = parseLandscapeCivil(md, 'Landscape Civil', '');
     else if (key === 'interior')       parsed = parseInteriorExecution(md, 'Interior', '');
 
   }
