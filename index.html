@@ -3399,9 +3399,10 @@ function parseCommonAreas(md) {
         || area.toLowerCase() === 's.no.' || area.toLowerCase() === 'so no'
         || area.toLowerCase() === 'lift details' || area.toLowerCase() === 'item') break;
     const states = stageNames.map((_, j) => (c[j+1] || '').trim());
-    // Signages and HO to HHFMT are NOT execution stages — exclude them from the
-    // combined status / progress / pending counts (they still show in column mode).
-    const isCounted = n => !/signage/i.test(n) && !/hhfmt|ho\s*to\s*h/i.test(n);
+    // Signages, HO to HHFMT, and Purchasable List are NOT execution stages —
+    // exclude them from the combined status / progress / pending counts
+    // (they still show in column mode).
+    const isCounted = n => !/signage/i.test(n) && !/hhfmt|ho\s*to\s*h/i.test(n) && !/purchasab/i.test(n);
     const counted = stageNames.map((n, j) => ({ n, j })).filter(x => isCounted(x.n));
     const trueCount  = counted.filter(x => states[x.j].toUpperCase() === 'TRUE').length;
     const naCount    = counted.filter(x => /^NA$/i.test(states[x.j]) || states[x.j] === '').length;
